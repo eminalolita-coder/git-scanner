@@ -25,3 +25,15 @@ func TestBasicAuth(t *testing.T) {
 		t.Errorf("basicAuth = %q", got)
 	}
 }
+
+func TestStripGerritPrefix(t *testing.T) {
+	in := []byte(")]}'\n{\"proj\":{}}")
+	out := string(stripGerritPrefix(in))
+	if out != `{"proj":{}}` {
+		t.Errorf("stripGerritPrefix = %q", out)
+	}
+	plain := []byte(`{"a":1}`)
+	if string(stripGerritPrefix(plain)) != `{"a":1}` {
+		t.Error("plain json should be unchanged")
+	}
+}

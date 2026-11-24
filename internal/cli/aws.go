@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
@@ -14,11 +16,17 @@ func newAWSCmd(opts *Options) *cobra.Command {
 		sessionToken string
 		region       string
 		enumerate    bool
+		deep         bool
+		chain        bool
+		externalID   string
+		depth        int
+		asJSON       bool
+		filter       string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "aws [access-key-id]",
-		Short: "Verify AWS credentials and optionally enumerate the account",
+		Short: "Verify AWS credentials, enumerate the account and walk role chains",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			creds := aws.Credentials{
@@ -28,31 +36,53 @@ func newAWSCmd(opts *Options) *cobra.Command {
 				Region:       region,
 			}
 			out := cmd.OutOrStdout()
+			ctx := cmd.Context()
 
-			id, err := aws.GetCallerIdentity(cmd.Context(), nil, creds)
+			id, err := aws.GetCallerIdentity(ctx, nil, creds)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "identity: %s\naccount : %s\nuser id : %s\n", id.ARN, id.Account, id.UserID)
 
-			if !enumerate {
-				return nil
-			}
-			if buckets, err := aws.ListBuckets(cmd.Context(), nil, creds); err == nil {
-				fmt.Fprintf(out, "\nS3 buckets (%d):\n", len(buckets))
-				for _, b := range buckets {
-					fmt.Fprintf(out, "  %s\n", b.Name)
+			if enumerate {
+				if buckets, err := aws.ListBuckets(ctx, nil, creds); err == nil {
+					fmt.Fprintf(out, "\nS3 buckets (%d):\n", len(buckets))
+					for _, b := range buckets {
+						fmt.Fprintf(out, "  %s\n", b.Name)
+					}
+				} else {
+					fmt.Fprintf(out, "\nS3: %v\n", err)
 				}
-			} else {
-				fmt.Fprintf(out, "\nS3: %v\n", err)
-			}
-			if users, err := aws.ListIAMUsers(cmd.Context(), nil, creds); err == nil {
-				fmt.Fprintf(out, "\nIAM users (%d):\n", len(users))
-				for _, u := range users {
-					fmt.Fprintf(out, "  %s\n", u.ARN)
+				if users, err := aws.ListIAMUsers(ctx, nil, creds); err == nil {
+					fmt.Fprintf(out, "\nIAM users (%d):\n", len(users))
+					for _, u := range users {
+						fmt.Fprintf(out, "  %s\n", u.ARN)
+					}
 				}
-			} else {
-				fmt.Fprintf(out, "\nIAM: %v\n", err)
+			}
+
+			if deep {
+				regions := []string{region}
+				res := aws.Enumerate(ctx, nil, creds, regions)
+				printEnum(out, res, asJSON)
+			}
+
+			if chain {
+				roles := aws.ListRolesForChain(ctx, nil, creds)
+				links := aws.AssumeChains(ctx, nil, creds, roles, aws.ChainOptions{
+					MaxDepth: depth, ExternalID: externalID, Duration: 3600, Match: filter,
+				})
+				ok, ko := 0, 0
+				fmt.Fprintf(out, "\nrole chain (%d candidate roles):\n", len(roles))
+				for _, l := range links {
+					if l.Err != "" {
+						ko++
+						continue
+					}
+					ok++
+					fmt.Fprintf(out, "  %s -> %s (expires %s)\n", l.From, l.AssumedARN, l.ExpiresAt.Format("15:04:05"))
+				}
+				fmt.Fprintf(out, "\n%d assumable, %d denied\n", ok, ko)
 			}
 			return nil
 		},
@@ -60,9 +90,67 @@ func newAWSCmd(opts *Options) *cobra.Command {
 
 	f := cmd.Flags()
 	f.StringVar(&secretKey, "secret-key", "", "paired secret access key")
-	f.StringVar(&sessionToken, "session-token", "", "session token (for temporary credentials)")
-	f.StringVar(&region, "region", "us-east-1", "region for signing")
+	f.StringVar(&sessionToken, "session-token", "", "session token")
+	f.StringVar(&region, "region", "us-east-1", "region")
 	f.BoolVarP(&enumerate, "enumerate", "e", false, "list S3 buckets and IAM users")
-
+	f.BoolVar(&deep, "deep", false, "full multi-service enumeration")
+	f.BoolVar(&chain, "chain", false, "walk assume-role chains")
+	f.StringVar(&externalID, "external-id", "", "external id for AssumeRole")
+	f.IntVar(&depth, "depth", 2, "max assume-role chain depth")
+	f.StringVar(&filter, "filter", "", "regex filter on role name/arn")
+	f.BoolVar(&asJSON, "json", false, "JSON output for --deep")
 	return cmd
+}
+
+func printEnum(out io.Writer, res aws.EnumResult, asJSON bool) {
+	if asJSON {
+		data, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Fprintf(out, "\n%s\n", data)
+		return
+	}
+	section(out, "secrets", namedNames(res.Secrets))
+	section(out, "ssm parameters", namedNames(res.SSMParams))
+	section(out, "lambda functions", namedNames(res.Functions))
+	section(out, "cloudformation stacks", namedNames(res.Stacks))
+	section(out, "ecr repositories", namedNames(res.Repos))
+	section(out, "rds instances", namedNames(res.Databases))
+	section(out, "sqs queues", res.Queues)
+	section(out, "sns topics", res.Topics)
+	section(out, "dynamodb tables", res.Tables)
+	section(out, "kms keys", res.KMSKeys)
+	if len(res.Instances) > 0 {
+		fmt.Fprintf(out, "\nEC2 instances (%d):\n", len(res.Instances))
+		for _, i := range res.Instances {
+			fmt.Fprintf(out, "  %s %s %s %s\n", i.Region, i.ID, i.Type, i.PublicIP)
+		}
+	}
+	if len(res.IAMRoles) > 0 {
+		fmt.Fprintf(out, "\nIAM roles (%d):\n", len(res.IAMRoles))
+		for _, r := range res.IAMRoles {
+			fmt.Fprintf(out, "  %s\n", r.ARN)
+		}
+	}
+	section(out, "IAM users", namedNames(res.IAMUsers))
+	section(out, "IAM policies", namedNames(res.Policies))
+	if len(res.Errors) > 0 {
+		fmt.Fprintf(out, "\n%d service error(s)\n", len(res.Errors))
+	}
+}
+
+func namedNames(ns []aws.Named) []string {
+	out := make([]string, 0, len(ns))
+	for _, n := range ns {
+		out = append(out, n.Name)
+	}
+	return out
+}
+
+func section(out io.Writer, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\n%s (%d):\n", title, len(items))
+	for _, it := range items {
+		fmt.Fprintf(out, "  %s\n", it)
+	}
 }

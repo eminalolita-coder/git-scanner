@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ const (
 	Gogs        Forge = "gogs"
 	Bitbucket   Forge = "bitbucket"
 	AzureDevOps Forge = "azuredevops"
+	Gerrit      Forge = "gerrit"
 )
 
 // Repo is a repository discovered on a forge.
@@ -44,6 +46,8 @@ func ForgeFromHost(host string) Forge {
 		return Bitbucket
 	case strings.Contains(h, "dev.azure.com"), strings.Contains(h, "visualstudio.com"):
 		return AzureDevOps
+	case strings.Contains(h, "gerrit"):
+		return Gerrit
 	case strings.Contains(h, "gitea"):
 		return Gitea
 	case strings.Contains(h, "gogs"):
@@ -58,7 +62,8 @@ type Client struct {
 	HTTP    *http.Client
 	Forge   Forge
 	BaseURL string // e.g. https://github.com or a self-hosted root
-	Token   string
+	Token   string // "user:pass" for gerrit/bitbucket/azure
+	Org     string // azure devops organisation
 	max     int
 }
 
@@ -92,8 +97,10 @@ func (c *Client) List(ctx context.Context) ([]Repo, error) {
 		return c.listGitLab(ctx)
 	case Bitbucket:
 		return c.listBitbucket(ctx)
-	case Gitea, Gogs:
-		return c.listGitea(ctx)
+	case AzureDevOps:
+		return c.listAzureDevOps(ctx)
+	case Gerrit:
+		return c.listGerrit(ctx)
 	default:
 		return c.listGitea(ctx)
 	}
@@ -118,6 +125,36 @@ func (c *Client) get(ctx context.Context, url string, hdr map[string]string, out
 		return fmt.Errorf("%s: status %d", url, resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) getRaw(ctx context.Context, url string, hdr map[string]string) ([]byte, error) {
+	code, body, _, err := c.getRawHeaders(ctx, url, hdr)
+	if err != nil {
+		return nil, err
+	}
+	if code >= 400 {
+		return body, fmt.Errorf("%s: status %d", url, code)
+	}
+	return body, nil
+}
+
+func (c *Client) getRawHeaders(ctx context.Context, url string, hdr map[string]string) (int, []byte, http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	req.Header.Set("User-Agent", "git-scanner")
+	req.Header.Set("Accept", "application/json")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	return resp.StatusCode, body, resp.Header, nil
 }
 
 func (c *Client) listGitHub(ctx context.Context) ([]Repo, error) {

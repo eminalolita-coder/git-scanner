@@ -201,6 +201,11 @@ func (s *Scanner) scanURL(ctx context.Context, t model.Target) error {
 	return nil
 }
 
+// ScanBytes scans an in-memory blob as if it were the given file of target t.
+func (s *Scanner) ScanBytes(t model.Target, file string, content []byte) {
+	s.scanContent(t, model.Location{Source: t.Value, File: file}, content)
+}
+
 // scanContent runs the engine on content plus its decoded variants.
 func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte) {
 	atomic.AddInt64(&s.files, 1)

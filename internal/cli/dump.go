@@ -12,7 +12,9 @@ import (
 func newDumpCmd(opts *Options) *cobra.Command {
 	var (
 		token   string
+		user    string
 		forge   string
+		org     string
 		limit   int
 		scan    bool
 		private bool
@@ -41,6 +43,10 @@ clone and scan every discovered repository.`,
 			}
 
 			client := dumper.New(frg, base, token)
+			client.Org = org
+			if user != "" {
+				client.Token = user + ":" + token
+			}
 			repos, err := client.List(cmd.Context())
 			if err != nil {
 				return err
@@ -77,7 +83,9 @@ clone and scan every discovered repository.`,
 
 	f := cmd.Flags()
 	f.StringVarP(&token, "token", "T", "", "forge API token")
-	f.StringVar(&forge, "forge", "", "force forge: github|gitlab|gitea|gogs|bitbucket")
+	f.StringVarP(&user, "user", "u", "", "username (gerrit / bitbucket)")
+	f.StringVar(&forge, "forge", "", "force forge: github|gitlab|gitea|gogs|bitbucket|azuredevops|gerrit")
+	f.StringVar(&org, "org", "", "organisation (azure devops)")
 	f.IntVarP(&limit, "limit", "n", 100, "max repositories to list")
 	f.BoolVar(&scan, "scan", false, "clone and scan each repository")
 	f.BoolVar(&private, "private-only", false, "list only private repositories")
