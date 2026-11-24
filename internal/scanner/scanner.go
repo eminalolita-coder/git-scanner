@@ -1,0 +1,377 @@
+// Package scanner orchestrates the whole pipeline: fetch content, run the
+// pattern engine, de-obfuscate, optionally verify, then persist and notify.
+package scanner
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/tls"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/eminalolita-coder/git-scanner/internal/analyzer"
+	"github.com/eminalolita-coder/git-scanner/internal/checkers"
+	"github.com/eminalolita-coder/git-scanner/internal/config"
+	"github.com/eminalolita-coder/git-scanner/internal/gitdump"
+	"github.com/eminalolita-coder/git-scanner/internal/logger"
+	"github.com/eminalolita-coder/git-scanner/internal/model"
+	"github.com/eminalolita-coder/git-scanner/internal/output"
+	"github.com/eminalolita-coder/git-scanner/internal/patterns"
+	"github.com/eminalolita-coder/git-scanner/internal/proxy"
+	"github.com/eminalolita-coder/git-scanner/internal/webhook"
+)
+
+// Options configures a Scanner.
+type Options struct {
+	Config   *config.Config
+	Engine   *patterns.Engine
+	Verify   bool
+	Writer   output.Writer
+	Notifier *webhook.Dispatcher
+}
+
+// Stats holds live counters.
+type Stats struct {
+	Files    int64
+	Findings int64
+	Verified int64
+}
+
+// Scanner runs the detection pipeline.
+type Scanner struct {
+	cfg    *config.Config
+	engine *patterns.Engine
+	verify bool
+	writer output.Writer
+	notif  *webhook.Dispatcher
+	dedup  *output.Dedup
+	an     analyzer.Options
+	proxy  *proxy.Manager
+	client *http.Client
+
+	files    int64
+	findings int64
+	verified int64
+
+	checkSem chan struct{}
+}
+
+// New builds a Scanner.
+func New(o Options) *Scanner {
+	an := analyzer.DefaultOptions()
+	an.MaxBase64Candidates = o.Config.ScanLimits.MaxBase64Candidates
+	an.MaxHexCandidates = o.Config.ScanLimits.MaxHexCandidates
+	an.MaxDecodeBytes = int(o.Config.ScanLimits.MaxBase64DecodeBytes)
+
+	client := httpClient
+	mgr, err := proxy.New(o.Config.Proxy)
+	if err == nil && mgr.Enabled() {
+		tr := &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			MaxIdleConns:        200,
+			MaxIdleConnsPerHost: 20,
+			Proxy:               mgr.ProxyFunc(),
+		}
+		client = &http.Client{Timeout: 30 * time.Second, Transport: tr}
+		checkers.SetHTTPClient(client)
+		logger.Infof("proxy enabled (%d entrie(s))", 1)
+	}
+
+	return &Scanner{
+		cfg:      o.Config,
+		engine:   o.Engine,
+		verify:   o.Verify,
+		writer:   o.Writer,
+		notif:    o.Notifier,
+		dedup:    output.NewDedup(o.Config.ScanLimits.MaxDedupEntries),
+		an:       an,
+		proxy:    mgr,
+		client:   client,
+		checkSem: make(chan struct{}, max(1, o.Config.Performance.CheckerConcurrency)),
+	}
+}
+
+// Stats returns a snapshot of counters.
+func (s *Scanner) Stats() Stats {
+	return Stats{Files: atomic.LoadInt64(&s.files), Findings: atomic.LoadInt64(&s.findings), Verified: atomic.LoadInt64(&s.verified)}
+}
+
+var gitCloner = sync.OnceValue(func() *gitdump.Cloner { return nil })
+
+// Run scans every target.
+func (s *Scanner) Run(ctx context.Context, targets []model.Target) {
+	sem := make(chan struct{}, max(1, s.cfg.Performance.Threads))
+	var wg sync.WaitGroup
+	for _, t := range targets {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		default:
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(t model.Target) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := s.scanTarget(ctx, t); err != nil {
+				logger.Debugf("target %s: %v", t.Value, err)
+			}
+		}(t)
+	}
+	wg.Wait()
+}
+
+func (s *Scanner) scanTarget(ctx context.Context, t model.Target) error {
+	switch t.Kind {
+	case model.KindGitRepo:
+		cloner := gitdump.New(s.cfg.GitScanner, s.cfg.ScanLimits)
+		if s.proxy != nil {
+			cloner.Proxy = s.proxy.GitProxy()
+		}
+		if t.GitHost == "" {
+			t.GitHost = gitdump.HostFromURL(t.Value)
+		}
+		return cloner.Dump(ctx, t, func(t model.Target, c gitdump.Content) {
+			s.scanContent(t, model.Location{
+				Source: t.Value, File: c.File, Commit: c.Commit, Branch: c.Branch,
+				Author: c.Author, Email: c.Email, Date: c.Date,
+			}, c.Bytes)
+		})
+	case model.KindDir:
+		return filepath.WalkDir(t.Value, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			data, err := os.ReadFile(p)
+			if err != nil || int64(len(data)) > s.cfg.ScanLimits.MaxFileSizeBytes {
+				return nil
+			}
+			rel, _ := filepath.Rel(t.Value, p)
+			s.scanContent(t, model.Location{Source: t.Value, File: filepath.ToSlash(rel)}, data)
+			return nil
+		})
+	case model.KindFile:
+		data, err := os.ReadFile(t.Value)
+		if err != nil {
+			return err
+		}
+		if isArchive(t.Value) {
+			return s.scanArchive(t, t.Value, data)
+		}
+		s.scanContent(t, model.Location{Source: t.Value, File: filepath.Base(t.Value)}, data)
+		return nil
+	case model.KindURL:
+		return s.scanURL(ctx, t)
+	}
+	return nil
+}
+
+func (s *Scanner) scanURL(ctx context.Context, t model.Target) error {
+	cctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.Performance.TimeoutSeconds)*time.Second)
+	defer cancel()
+	req, err := newRequest(cctx, t.Value)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	limit := int64(s.cfg.Performance.MaxResponseBodyMB) << 20
+	if limit <= 0 {
+		limit = 50 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return err
+	}
+	s.scanContent(t, model.Location{Source: t.Value}, body)
+	return nil
+}
+
+// scanContent runs the engine on content plus its decoded variants.
+func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte) {
+	atomic.AddInt64(&s.files, 1)
+
+	blobs := [][]byte{content}
+	if analyzer.IsBinary(content) {
+		switch s.cfg.ScanLimits.BinaryPolicy {
+		case "skip":
+			return
+		case "extract_strings":
+			blobs = [][]byte{analyzer.ExtractStrings(content, s.cfg.ScanLimits.MinStringLength)}
+		}
+	}
+	blobs = append(blobs, analyzer.Deobfuscate(content, s.an)...)
+
+	for _, blob := range blobs {
+		for _, m := range s.engine.Scan(blob) {
+			f := model.Finding{
+				RuleID:      m.Pattern.ID,
+				Description: m.Pattern.Description,
+				Secret:      m.Secret,
+				Match:       m.Match,
+				Entropy:     patterns.Shannon(m.Secret),
+				Location:    loc,
+				Tags:        m.Pattern.Tags,
+				Detected:    time.Now().UTC(),
+			}
+			if loc.Line == 0 {
+				f.Location.Line = lineOf(content, m.Index)
+			}
+			if isAWSKey(m.Pattern.ID) {
+				if sec := firstAWSSecret(blob, m.Secret); sec != "" {
+					f.Extra = map[string]string{"secret": sec}
+				}
+			}
+			s.emit(f)
+		}
+	}
+}
+
+func (s *Scanner) emit(f model.Finding) {
+	if !s.dedup.First(f.DedupKey()) {
+		return
+	}
+	if s.verify {
+		s.verifyFinding(&f)
+	}
+	atomic.AddInt64(&s.findings, 1)
+	if f.Verified {
+		atomic.AddInt64(&s.verified, 1)
+	}
+	if s.writer != nil {
+		if err := s.writer.Write(f); err != nil {
+			logger.Debugf("write finding: %v", err)
+		}
+	}
+	if f.Verified && s.notif != nil {
+		s.notif.Send(context.Background(), formatNotification(f))
+	}
+}
+
+func (s *Scanner) verifyFinding(f *model.Finding) {
+	cs := checkers.For(f.RuleID, f.Tags)
+	if len(cs) == 0 {
+		return
+	}
+	s.checkSem <- struct{}{}
+	defer func() { <-s.checkSem }()
+	ctx, cancel := context.WithTimeout(context.Background(), checkers.DefaultTimeout)
+	defer cancel()
+	res := cs[0].Check(ctx, f.Secret, f.Extra)
+	f.Verified = res.Verified
+	f.Checker = cs[0].Name()
+	if res.Identity != "" && f.Extra == nil {
+		f.Extra = map[string]string{"identity": res.Identity}
+	}
+}
+
+func lineOf(content []byte, idx int) int {
+	if idx > len(content) {
+		idx = len(content)
+	}
+	return bytes.Count(content[:idx], []byte{'\n'}) + 1
+}
+
+func formatNotification(f model.Finding) string {
+	var b strings.Builder
+	b.WriteString("🔑 <b>" + f.RuleID + "</b> (verified)")
+	b.WriteString("\n" + f.Description)
+	b.WriteString("\n<code>" + f.Secret + "</code>")
+	if f.Location.Source != "" {
+		b.WriteString("\nsource: " + f.Location.Source)
+	}
+	if f.Location.File != "" {
+		b.WriteString("\nfile: " + f.Location.File)
+	}
+	return b.String()
+}
+
+func isArchive(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".zip") || strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") || strings.HasSuffix(lower, ".jar") || strings.HasSuffix(lower, ".war")
+}
+
+func (s *Scanner) scanArchive(t model.Target, name string, data []byte) error {
+	switch {
+	case strings.HasSuffix(strings.ToLower(name), ".zip") || strings.HasSuffix(strings.ToLower(name), ".jar") || strings.HasSuffix(strings.ToLower(name), ".war"):
+		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return err
+		}
+		for _, f := range zr.File {
+			if f.FileInfo().IsDir() || f.UncompressedSize64 > uint64(s.cfg.ScanLimits.MaxZipEntrySizeBytes) {
+				continue
+			}
+			rc, err := f.Open()
+			if err != nil {
+				continue
+			}
+			b, _ := io.ReadAll(io.LimitReader(rc, s.cfg.ScanLimits.MaxZipEntrySizeBytes))
+			rc.Close()
+			s.scanContent(t, model.Location{Source: name, File: f.Name}, b)
+		}
+	default:
+		gz, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		defer gz.Close()
+		tr := tar.NewReader(gz)
+		for {
+			hdr, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				break
+			}
+			if hdr.Typeflag != tar.TypeReg {
+				continue
+			}
+			b, _ := io.ReadAll(io.LimitReader(tr, s.cfg.ScanLimits.MaxZipEntrySizeBytes))
+			s.scanContent(t, model.Location{Source: name, File: hdr.Name}, b)
+		}
+	}
+	return nil
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+var (
+	reAWSSecret  = regexp.MustCompile(`\b([A-Za-z0-9/+=]{40})\b`)
+	reAWSSession = regexp.MustCompile(`(?i)aws_session_token["'\s:=]{1,6}([A-Za-z0-9/+=]{100,})`)
+)
+
+func isAWSKey(ruleID string) bool {
+	return ruleID == "aws-access-key-id" || ruleID == "aws-access-key-boundary"
+}
+
+// firstAWSSecret finds a plausible paired AWS secret key near the access key.
+func firstAWSSecret(blob []byte, accessKey string) string {
+	s := string(blob)
+	for _, m := range reAWSSecret.FindAllStringSubmatch(s, 20) {
+		if m[1] != accessKey {
+			return m[1]
+		}
+	}
+	return ""
+}

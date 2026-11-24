@@ -1,0 +1,18 @@
+# Binaries
+/git-scanner
+/git-scanner.exe
+/dist/
+/bin/
+
+# Scan artifacts
+/hits/
+*.log
+
+# Local config overrides
+config.local.json
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

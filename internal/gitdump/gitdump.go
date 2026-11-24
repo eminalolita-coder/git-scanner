@@ -1,0 +1,202 @@
+// Package gitdump clones repositories and extracts their content (worktree,
+// history, config, refs) for scanning.
+package gitdump
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+
+	"github.com/eminalolita-coder/git-scanner/internal/config"
+	"github.com/eminalolita-coder/git-scanner/internal/model"
+)
+
+// Content is a blob of scannable text with its provenance.
+type Content struct {
+	Bytes  []byte
+	File   string
+	Commit string
+	Branch string
+	Author string
+	Email  string
+	Date   string
+}
+
+// Handler consumes extracted content.
+type Handler func(model.Target, Content)
+
+// Options configures cloning and history walking.
+type Options struct {
+	CloneDir     string
+	Depth        int
+	MaxFileSize  int64
+	ScanHistory  bool
+	MaxHistory   int
+	SkipBinary   bool
+	ExcludedExts map[string]bool
+	Auth         *git.CloneOptions
+}
+
+// Cloner clones repositories and streams their content to a handler.
+type Cloner struct {
+	cfg   config.GitScanner
+	lim   config.ScanLimits
+	Proxy *transport.ProxyOptions
+}
+
+// New builds a Cloner from configuration.
+func New(cfg config.GitScanner, lim config.ScanLimits) *Cloner {
+	return &Cloner{cfg: cfg, lim: lim}
+}
+
+// Dump clones url and streams every scannable blob to h.
+func (c *Cloner) Dump(ctx context.Context, t model.Target, h Handler) error {
+	dir, err := os.MkdirTemp("", "git-scanner-clone-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+
+	opts := &git.CloneOptions{URL: t.Value, Tags: git.AllTags}
+	if c.Proxy != nil {
+		opts.ProxyOptions = *c.Proxy
+	}
+	if t.Token != "" {
+		opts.Auth = tokenAuth(t.GitHost, t.Token)
+	}
+	if c.cfg.MaxHistoryDepth > 0 {
+		opts.Depth = c.cfg.MaxHistoryDepth
+	}
+
+	repo, err := git.PlainCloneContext(ctx, dir, false, opts)
+	if err != nil && !errors.Is(err, git.ErrRepositoryAlreadyExists) {
+		return fmt.Errorf("clone %s: %w", t.Value, err)
+	}
+
+	if err := c.scanWorktree(t, dir, h); err != nil {
+		return err
+	}
+	if c.cfg.ScanHistory {
+		c.scanHistory(t, repo, h)
+	}
+	return nil
+}
+
+func (c *Cloner) scanWorktree(t model.Target, dir string, h Handler) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if excluded(path) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() > c.lim.MaxFileSizeBytes {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		if IsBinary(data) && c.cfg.SkipBinaryFiles {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		h(t, Content{Bytes: data, File: filepath.ToSlash(rel)})
+		return nil
+	})
+}
+
+func (c *Cloner) scanHistory(t model.Target, repo *git.Repository, h Handler) {
+	iter, err := repo.Log(&git.LogOptions{Order: git.LogOrderCommitterTime})
+	if err != nil {
+		return
+	}
+	count := 0
+	_ = iter.ForEach(func(commit *object.Commit) error {
+		if c.cfg.MaxHistoryDepth > 0 && count >= c.cfg.MaxHistoryDepth {
+			return io.EOF
+		}
+		count++
+		files, err := commit.Files()
+		if err != nil {
+			return nil
+		}
+		_ = files.ForEach(func(f *object.File) error {
+			if f.Size > c.lim.MaxBlobSizeBytes || excluded(f.Name) {
+				return nil
+			}
+			content, err := f.Contents()
+			if err != nil {
+				return nil
+			}
+			h(t, Content{
+				Bytes:  []byte(content),
+				File:   f.Name,
+				Commit: commit.Hash.String(),
+				Author: commit.Author.Name,
+				Email:  commit.Author.Email,
+				Date:   commit.Author.When.Format(time.RFC3339),
+			})
+			return nil
+		})
+		return nil
+	})
+}
+
+var excludedExt = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
+	".ico": true, ".woff": true, ".woff2": true, ".ttf": true, ".eot": true,
+	".mp3": true, ".mp4": true, ".pdf": true, ".zip": true, ".gz": true,
+	".exe": true, ".dll": true, ".so": true, ".dylib": true, ".class": true,
+	".min.js": false,
+}
+
+func excluded(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return excludedExt[ext]
+}
+
+// IsBinary is a local copy to avoid an import cycle.
+func IsBinary(b []byte) bool {
+	probe := b
+	if len(probe) > 512 {
+		probe = probe[:512]
+	}
+	for _, c := range probe {
+		if c == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// BranchRefs returns all branch references of a repo.
+func BranchRefs(repo *git.Repository) ([]string, error) {
+	iter, err := repo.Branches()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	_ = iter.ForEach(func(r *plumbing.Reference) error {
+		out = append(out, r.Name().Short())
+		return nil
+	})
+	return out, nil
+}

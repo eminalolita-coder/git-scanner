@@ -1,0 +1,12 @@
+[
+  {
+    "id": "acme-token",
+    "description": "Acme API token",
+    "regex": "\\b(acme_[A-Za-z0-9]{32})\\b",
+    "secret_group": 1,
+    "entropy": 3.5,
+    "keywords": ["acme_"],
+    "tags": ["acme"],
+    "allowlist": ["^acme_example$"]
+  }
+]
