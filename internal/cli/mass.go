@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -68,6 +69,8 @@ func newMassCmd(opts *Options) *cobra.Command {
 		gitToken      string
 		followForge   bool
 		forgeMax      int
+		followRobots  bool
+		robotsMax     int
 	)
 
 	cmd := &cobra.Command{
@@ -166,7 +169,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				MaxConnsPerHost:   32,
 			})
 
-			paths := splitCSV(pathsFlag)
+			paths := normalizePaths(splitCSV(pathsFlag))
 			if len(paths) == 0 {
 				paths = []string{"/"}
 			}
@@ -187,6 +190,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			bucketSet := &sync.Map{}
 			repoSet := &sync.Map{}
 			tokenSet := &sync.Map{}
+			emailSet := &sync.Map{}
 			verifySem := make(chan struct{}, 256)
 			start := time.Now()
 
@@ -235,6 +239,9 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 						if crawlJS && len(rootBody) > 0 && jscracker.IsHTML(rootBody) {
 							crawlScripts(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, rootBody, jsMax, decode, bucketSet, repoSet, tokenSet)
 						}
+						if followRobots {
+							crawlRobots(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, robotsMax, decode, bucketSet, repoSet, tokenSet)
+						}
 						done.Add(1)
 					}
 				}()
@@ -260,10 +267,10 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				triageBuckets(ctx, out, bucketSet, engine, async, dedup, &findings, verifySem, decode, bucketObjects)
 			}
 			if followGit && mapLen(repoSet) > 0 {
-				followGitRepos(ctx, out, repoSet, cfg, engine, async, dedup, &findings, verifySem, decode, followMax, gitDepth, gitToken)
+				followGitRepos(ctx, out, repoSet, emailSet, cfg, engine, async, dedup, &findings, verifySem, decode, followMax, gitDepth, gitToken)
 			}
 			if followForge && mapLen(repoSet) > 0 {
-				followForgeAccount(ctx, out, repoSet, tokenSet, cfg, engine, async, dedup, &findings, verifySem, decode, forgeMax, gitToken)
+				followForgeAccount(ctx, out, repoSet, tokenSet, emailSet, cfg, engine, async, dedup, &findings, verifySem, decode, forgeMax, gitToken)
 			}
 
 			el := time.Since(start).Seconds()
@@ -305,6 +312,8 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.StringVar(&gitToken, "git-token", "", "token used to clone private repositories")
 	f.BoolVar(&followForge, "follow-forge", false, "expand the forge account of a found remote (uses a leaked token if any)")
 	f.IntVar(&forgeMax, "forge-max", 0, "repositories to clone per forge account (0 = list only)")
+	f.BoolVar(&followRobots, "follow-robots", false, "follow robots.txt/sitemap.xml paths")
+	f.IntVar(&robotsMax, "robots-max", 15, "max extra URLs per host from robots/sitemap")
 	return cmd
 }
 
@@ -498,7 +507,107 @@ func crawlScripts(ctx context.Context, client *fetch.Client, engine *patterns.En
 		}
 		for _, pm := range jscracker.SourceMaps(body) {
 			emitSimple(dedup, w, findings, "js-sourcemap", "JS source map reference", pm, u.Host, u.Path, []string{"js"})
+			mURL := pm
+			if !strings.HasPrefix(mURL, "http") {
+				if ru, err := u.Parse(pm); err == nil {
+					mURL = ru.String()
+				}
+			}
+			mu, err := url.Parse(mURL)
+			if err != nil {
+				continue
+			}
+			mcode, mbody, err := client.Fetch(ctx, mu.Scheme, mu.Host, mu.Path)
+			if err != nil || mcode != 200 || len(mbody) == 0 {
+				continue
+			}
+			// source maps embed the original sources: a rich hit surface
+			scanMassBody(engine, dedup, w, false, mu.Host, mu.Path, mbody, findings, buckets, repos, tokens, verifySem, decode)
 		}
+	}
+}
+
+var reLoc = regexp.MustCompile(`<loc>\s*([^<\s]+)\s*</loc>`)
+
+// crawlRobots fetches robots.txt and sitemap.xml, scans them and follows the
+// referenced paths/URLs (bounded).
+func crawlRobots(ctx context.Context, client *fetch.Client, engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, findings *atomic.Int64, verifySem chan struct{}, scheme, rootScheme, host string, maxExtra int, decode bool, buckets, repos, tokens *sync.Map) {
+	if maxExtra <= 0 {
+		maxExtra = 15
+	}
+	base := rootScheme
+	if base == "" || base == "auto" {
+		base = scheme
+	}
+	if base == "" || base == "auto" {
+		base = "https"
+	}
+	var candidates []string
+	seen := map[string]bool{}
+
+	_, rbody, err := client.Fetch(ctx, base, host, "/robots.txt")
+	if err == nil && len(rbody) > 0 {
+		scanMassBody(engine, dedup, w, false, host, "/robots.txt", rbody, findings, buckets, repos, tokens, verifySem, decode)
+		for _, line := range strings.Split(string(rbody), "\n") {
+			line = strings.TrimSpace(line)
+			low := strings.ToLower(line)
+			switch {
+			case strings.HasPrefix(low, "sitemap:"):
+				u := strings.TrimSpace(line[len("sitemap:"):])
+				if u != "" {
+					candidates = append(candidates, u)
+				}
+			case strings.HasPrefix(low, "allow:"), strings.HasPrefix(low, "disallow:"):
+				p := strings.TrimSpace(line[strings.Index(line, ":")+1:])
+				if p == "" || p == "/" || strings.ContainsAny(p, "*$") {
+					continue
+				}
+				candidates = append(candidates, p)
+			}
+		}
+	}
+	_, sbody, err := client.Fetch(ctx, base, host, "/sitemap.xml")
+	if err == nil && len(sbody) > 0 {
+		scanMassBody(engine, dedup, w, false, host, "/sitemap.xml", sbody, findings, buckets, repos, tokens, verifySem, decode)
+		for _, m := range reLoc.FindAllStringSubmatch(string(sbody), 40) {
+			candidates = append(candidates, m[1])
+		}
+	}
+
+	count := 0
+	for _, cand := range candidates {
+		if count >= maxExtra {
+			break
+		}
+		u, err := url.Parse(cand)
+		if err != nil {
+			continue
+		}
+		if !u.IsAbs() {
+			b, err := url.Parse(base + "://" + host)
+			if err != nil {
+				continue
+			}
+			u = b.ResolveReference(u)
+		}
+		key := u.Host + u.Path
+		if seen[key] {
+			continue
+		}
+		if !strings.EqualFold(u.Host, host) {
+			continue
+		}
+		seen[key] = true
+		count++
+		requestsAdd(1)
+		code, body, err := client.Fetch(ctx, u.Scheme, u.Host, u.Path)
+		if err != nil || code == 0 || len(body) == 0 {
+			continue
+		}
+		scanMassBody(engine, dedup, w, false, u.Host, u.Path, body, findings, buckets, repos, tokens, verifySem, decode)
+	}
+	if count > 0 {
+		fmt.Fprintf(io.Discard, "")
 	}
 }
 
@@ -550,7 +659,7 @@ func repoRemote(m *sync.Map, host string) string {
 
 // followGitRepos clones exposed repositories (bounded) and scans their
 // worktree, and optionally their history.
-func followGitRepos(ctx context.Context, out io.Writer, repos *sync.Map, cfg *config.Config, engine *patterns.Engine, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64, verifySem chan struct{}, decode bool, maxRepos, depth int, token string) {
+func followGitRepos(ctx context.Context, out io.Writer, repos, emails *sync.Map, cfg *config.Config, engine *patterns.Engine, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64, verifySem chan struct{}, decode bool, maxRepos, depth int, token string) {
 	type job struct{ host, remote string }
 	var jobs []job
 	repos.Range(func(k, v any) bool {
@@ -574,7 +683,7 @@ func followGitRepos(ctx context.Context, out io.Writer, repos *sync.Map, cfg *co
 	lim := cfg.ScanLimits
 	cloner := gitdump.New(gcfg, lim)
 
-	rs := &repoScanner{cloner: cloner, engine: engine, dedup: dedup, w: w, findings: findings, verifySem: verifySem, decode: decode, out: out}
+	rs := &repoScanner{cloner: cloner, engine: engine, dedup: dedup, w: w, findings: findings, verifySem: verifySem, decode: decode, out: out, emails: emails}
 
 	for _, j := range jobs {
 		var candidates []string
@@ -599,6 +708,7 @@ type repoScanner struct {
 	verifySem chan struct{}
 	decode    bool
 	out       io.Writer
+	emails    *sync.Map
 }
 
 // scanURL tries the candidate clone URLs in order, then the dumb protocol.
@@ -616,6 +726,14 @@ func (rs *repoScanner) scanURL(ctx context.Context, host string, candidates []st
 		}
 		err := rs.cloner.Dump(cctx, target, func(t model.Target, c gitdump.Content) {
 			files++
+			if rs.emails != nil && c.Email != "" {
+				if _, seen := rs.emails.Load(c.Email); !seen {
+					rs.emails.Store(c.Email, host)
+				}
+			}
+			if c.Author != "" {
+				rs.emit("git-author", "Commit author", c.Author+" <"+c.Email+">", t.Value, c.File, []string{"git", "identity"})
+			}
 			scanMassBody(rs.engine, rs.dedup, rs.w, false, cloneURL, c.File, c.Bytes, rs.findings, nil, nil, nil, rs.verifySem, rs.decode)
 		})
 		cancel()
@@ -676,7 +794,7 @@ func normalizeToken(t string) string {
 
 // followForge expands the account behind a discovered remote, using a leaked
 // token when available, and optionally clones what it lists.
-func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens *sync.Map, cfg *config.Config, engine *patterns.Engine, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64, verifySem chan struct{}, decode bool, forgeMax int, fallbackToken string) {
+func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens, emails *sync.Map, cfg *config.Config, engine *patterns.Engine, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64, verifySem chan struct{}, decode bool, forgeMax int, fallbackToken string) {
 	type lead struct{ host, remote, token string }
 	var leads []lead
 	repos.Range(func(k, v any) bool {
@@ -741,6 +859,32 @@ func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens *sync.
 			rs.emit("forge-repo", "Repository of the forge account", r.CloneURL, l.host, "/", []string{"forge"})
 			if forgeMax > 0 && i < forgeMax {
 				rs.scanURL(ctx, r.FullName, []string{r.CloneURL}, "", token)
+			}
+		}
+
+		// identity pivot: author emails found on this host -> forge accounts
+		if emails != nil {
+			var mails []string
+			emails.Range(func(k, v any) bool {
+				email, _ := k.(string)
+				if h, _ := v.(string); h == l.host {
+					mails = append(mails, email)
+				}
+				return true
+			})
+			sort.Strings(mails)
+			for i, em := range mails {
+				if i >= 15 {
+					break
+				}
+				profiles, err := cl.SearchIdentity(ctx, em)
+				if err != nil || len(profiles) == 0 {
+					continue
+				}
+				for _, p := range profiles {
+					rs.emit("identity-pivot", "Forge account matching a commit email", p, l.host, "/", []string{"identity", "forge"})
+				}
+				fmt.Fprintf(out, "  [pivot] %s -> %v\n", em, profiles)
 			}
 		}
 	}
@@ -873,6 +1017,17 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// normalizePaths ensures every path starts with "/", so that
+// --paths "/,.env,.git/HEAD" builds https://host/.env and not https://host.env.
+func normalizePaths(in []string) []string {
+	for i, p := range in {
+		if !strings.HasPrefix(p, "/") && !strings.Contains(p, "://") {
+			in[i] = "/" + p
+		}
+	}
+	return in
 }
 
 func min(a, b int) int {

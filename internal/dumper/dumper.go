@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -86,6 +87,75 @@ func New(forge Forge, base, token string) *Client {
 		Token:   token,
 		max:     1000,
 	}
+}
+
+// SearchIdentity looks up accounts by commit author email on the forge.
+func (c *Client) SearchIdentity(ctx context.Context, email string) ([]string, error) {
+	if email == "" {
+		return nil, nil
+	}
+	hdr := map[string]string{}
+	if c.Token != "" {
+		hdr["Authorization"] = "token " + c.Token
+		hdr["PRIVATE-TOKEN"] = c.Token
+	}
+	switch c.Forge {
+	case GitHub:
+		api := c.BaseURL
+		if strings.Contains(api, "github.com") || api == "" {
+			api = "https://api.github.com"
+		}
+		var out struct {
+			Items []struct {
+				Login   string `json:"login"`
+				HTMLURL string `json:"html_url"`
+			} `json:"items"`
+		}
+		u := fmt.Sprintf("%s/search/users?q=%s+in:email", api, url.QueryEscape(email))
+		if err := c.getWithFallback(ctx, u, hdr, &out); err != nil {
+			return nil, err
+		}
+		var res []string
+		for _, it := range out.Items {
+			if it.HTMLURL != "" {
+				res = append(res, it.HTMLURL)
+			} else {
+				res = append(res, it.Login)
+			}
+		}
+		return res, nil
+	case GitLab:
+		api := strings.TrimRight(c.BaseURL, "/") + "/api/v4"
+		var out []struct {
+			Username string `json:"username"`
+			WebURL   string `json:"web_url"`
+		}
+		u := fmt.Sprintf("%s/users?search=%s", api, url.QueryEscape(email))
+		if err := c.getWithFallback(ctx, u, hdr, &out); err != nil {
+			return nil, err
+		}
+		var res []string
+		for _, it := range out {
+			res = append(res, it.WebURL)
+		}
+		return res, nil
+	case Gitea, Gogs:
+		api := strings.TrimRight(c.BaseURL, "/") + "/api/v1"
+		var out []struct {
+			Login   string `json:"login"`
+			HTMLURL string `json:"html_url"`
+		}
+		u := fmt.Sprintf("%s/users/search?q=%s", api, url.QueryEscape(email))
+		if err := c.getWithFallback(ctx, u, hdr, &out); err != nil {
+			return nil, err
+		}
+		var res []string
+		for _, it := range out {
+			res = append(res, it.HTMLURL)
+		}
+		return res, nil
+	}
+	return nil, fmt.Errorf("unsupported forge %s", c.Forge)
 }
 
 // getWithFallback performs a GET, retrying without credentials when an

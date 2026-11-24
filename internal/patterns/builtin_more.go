@@ -5,7 +5,10 @@ package patterns
 // `(?:^|[^\w]) … (?:[^\w]|$)` boundary form to avoid matching inside larger
 // tokens.
 func Builtin() []Pattern {
-	return append(humanRules(), extractedRules()...)
+	out := humanRules()
+	out = append(out, extractedRules()...)
+	out = append(out, extraRules()...)
+	return out
 }
 
 // extractedRules are provider rules recovered from the reference binary.
