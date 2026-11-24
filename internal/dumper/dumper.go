@@ -501,9 +501,18 @@ func (c *Client) listGitea(ctx context.Context) ([]Repo, error) {
 }
 
 func (c *Client) listBitbucket(ctx context.Context) ([]Repo, error) {
-	// token form "user:app-password"
+	// token form "user:app-password"; fall back to the owner/org as workspace
 	user, pass, _ := strings.Cut(c.Token, ":")
-	hdr := map[string]string{"Authorization": basicAuth(user, pass)}
+	if user == "" {
+		user = c.Org
+	}
+	if user == "" {
+		return nil, fmt.Errorf("bitbucket: workspace required (owner or --org)")
+	}
+	hdr := map[string]string{}
+	if pass != "" {
+		hdr["Authorization"] = basicAuth(user, pass)
+	}
 	var out []Repo
 	next := strings.TrimRight(c.BaseURL, "/") + "/2.0/repositories/" + user + "?pagelen=100"
 	for next != "" && len(out) < c.max {

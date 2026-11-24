@@ -867,17 +867,24 @@ func followGitRepos(ctx context.Context, out io.Writer, repos, emails *sync.Map,
 
 	rs := &repoScanner{cloner: cloner, engine: engine, dedup: dedup, w: w, findings: findings, verifySem: verifySem, decode: decode, out: out, emails: emails}
 
+	// parallel: cloning is network bound and was the slowest phase
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 6)
 	for _, j := range jobs {
-		var candidates []string
-		if strings.HasPrefix(j.remote, "http") {
-			candidates = append(candidates, j.remote)
-		}
-		candidates = append(candidates, "https://"+j.host+"/.git", "http://"+j.host+"/.git")
-
-		if rs.scanURL(ctx, j.host, candidates, "https://"+j.host+"/.git", token) {
-			continue
-		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(j job) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			var candidates []string
+			if strings.HasPrefix(j.remote, "http") {
+				candidates = append(candidates, j.remote)
+			}
+			candidates = append(candidates, "https://"+j.host+"/.git", "http://"+j.host+"/.git")
+			rs.scanURL(ctx, j.host, candidates, "https://"+j.host+"/.git", token)
+		}(j)
 	}
+	wg.Wait()
 }
 
 // repoScanner holds the shared state used to clone/scan a repository.
@@ -898,7 +905,7 @@ type repoScanner struct {
 func (rs *repoScanner) scanURL(ctx context.Context, host string, candidates []string, dumbBase, token string) bool {
 	var lastErr error
 	for _, cloneURL := range candidates {
-		cctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		files := 0
 		target := model.Target{
 			Kind:    model.KindGitRepo,
@@ -918,7 +925,7 @@ func (rs *repoScanner) scanURL(ctx context.Context, host string, candidates []st
 		}
 		// an expired token makes public repos fail: retry without it
 		if token != "" {
-			cctx2, cancel2 := context.WithTimeout(ctx, 180*time.Second)
+			cctx2, cancel2 := context.WithTimeout(ctx, 90*time.Second)
 			target.Token = ""
 			files = 0
 			err2 := rs.cloner.Dump(cctx2, target, func(t model.Target, c gitdump.Content) {
@@ -1036,6 +1043,8 @@ func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens, email
 	}
 
 	fmt.Fprintf(out, "\n[forge] expanding %d remote(s)...\n", len(leads))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 6)
 	for _, l := range leads {
 		forge, base, owner, ok := dumper.ParseRemote(l.remote)
 		if !ok {
@@ -1046,6 +1055,7 @@ func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens, email
 			token = fallbackToken
 		}
 		cl := dumper.New(forge, base, token)
+		cl.Org = owner
 		listed, err := cl.ListOwner(ctx, owner)
 		if err != nil {
 			fmt.Fprintf(out, "  [forge] %s/%s -> %v\n", forge, owner, err)
@@ -1065,7 +1075,13 @@ func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens, email
 			}
 			rs.emit("forge-repo", "Repository of the forge account", r.CloneURL, l.host, "/", []string{"forge"})
 			if forgeMax > 0 && i < forgeMax {
-				rs.scanURL(ctx, r.FullName, []string{r.CloneURL}, "", token)
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(r dumper.Repo, tok string) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					rs.scanURL(ctx, r.FullName, []string{r.CloneURL}, "", tok)
+				}(r, token)
 			}
 		}
 
@@ -1095,6 +1111,7 @@ func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens, email
 			}
 		}
 	}
+	wg.Wait()
 }
 
 func bucketNames(m *sync.Map) []string {
