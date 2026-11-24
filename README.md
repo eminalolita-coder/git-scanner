@@ -142,6 +142,12 @@ GOGC=400 git-scanner mass hosts.txt --profile vps --concurrency 20000 \
   --timeout 3 --scheme http --max-body 256 -o hits
 ```
 
+Or use the wrapper (handles limits, optional tuning, build and scan):
+
+```sh
+TARGETS=hosts.txt OUT=hits TUNE=1 ./scripts/mass-scan.sh
+```
+
 `--profile auto|small|vps|max` derives concurrency from the CPU count
 (×150 / ×50 / ×250 / ×500) and sets GOGC (0/0/400/800); explicit flags win.
 
