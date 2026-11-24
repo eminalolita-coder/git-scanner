@@ -182,6 +182,28 @@ Conclusions for that box:
 - watch `dropped:` in the summary: it only appears if the writer buffer
   overflows (raise `--concurrency` then).
 
+## Resilient runs (unstable link, VPN, saturated uplink)
+
+A long scan dies when the link drops or the router chokes. Use the supervisor:
+it checkpoints every completed host, detects a stalled run, backs off and
+relaunches with a gentler concurrency/rate until everything is scanned.
+
+```sh
+TARGETS=hosts.txt OUT=hits CONCURRENCY=3000 RATE=2500 ./scripts/mass-resilient.sh
+```
+
+- progress lives in `hosts.txt.ckpt`; a relaunch skips what is done, so
+  `Ctrl-C`, a VPN drop or a reboot cost nothing (`rm hosts.txt.ckpt` to restart)
+- `mass --stall-exit 90` makes an unproductive run exit with code 75 instead of
+  hanging; the supervisor then halves concurrency and cuts the rate by 25 %
+- `--rate` (requests/s) is the real protection for a residential uplink: the
+  target is `concurrence ÷ latence`, but the link has its own ceiling
+- `--checkpoint FILE` alone gives resume when you launch `mass` by hand
+
+Recommended starting point on a home/VPN link: `--rate 2500 --concurrency 3000
+--timeout 5`. If `[stall]` appears, the supervisor will walk both down
+automatically.
+
 ## Configuration
 
 ```sh
@@ -264,6 +286,7 @@ Core and recon features are implemented and tested:
 - [x] `.git` → forge → account expansion (`--follow-forge`), using a leaked token when present
 - [x] Full-history scanning incl. deleted files and stashes (`--git-depth 0`)
 - [x] HEAD + `Range` mode for large dumps (`--range`, `--range-size`)
+- [x] Crash/network-cut resilience: `--checkpoint`, `--stall-exit`, `scripts/mass-resilient.sh`
 
 ## Development
 

@@ -75,6 +75,8 @@ func newMassCmd(opts *Options) *cobra.Command {
 		robotsMax     int
 		rangeMode     bool
 		rangeSizeKB   int
+		checkpoint    string
+		stallExit     int
 	)
 
 	cmd := &cobra.Command{
@@ -92,6 +94,31 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			}
 			if len(entries) == 0 {
 				return fmt.Errorf("no hosts")
+			}
+
+			// resume support
+			var cp *ckpt
+			if checkpoint != "" {
+				c, cerr := openCkpt(checkpoint)
+				if cerr != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "checkpoint: %v\n", cerr)
+				} else {
+					cp = c
+					before := len(entries)
+					kept := entries[:0]
+					for _, e := range entries {
+						if !cp.has(e.host) {
+							kept = append(kept, e)
+						}
+					}
+					entries = kept
+					fmt.Fprintf(cmd.OutOrStdout(), "checkpoint: %d already done, %d remaining\n", before-len(entries), len(entries))
+					defer cp.close()
+				}
+			}
+			if len(entries) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "nothing left to scan")
+				return nil
 			}
 
 			cfg, err := loadConfig(opts)
@@ -137,7 +164,9 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			ctx := cmd.Context()
 			runCtx, sigStop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer sigStop()
-			ctx = runCtx
+			ctx, cancelAll := context.WithCancel(runCtx)
+			defer cancelAll()
+			var stalled atomic.Bool
 			out := cmd.OutOrStdout()
 
 			fmt.Fprintf(out, "profile=%s concurrency=%d timeout=%ds body=%dKB method=%s gogc=%d cpu=%d\n",
@@ -221,6 +250,35 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				}
 			}()
 
+			if stallExit > 0 {
+				go func() {
+					t := time.NewTicker(5 * time.Second)
+					defer t.Stop()
+					last := int64(-1)
+					idle := 0
+					for {
+						select {
+						case <-stop:
+							return
+						case <-t.C:
+							cur := done.Load()
+							if cur == last {
+								idle += 5
+							} else {
+								idle = 0
+							}
+							last = cur
+							if idle >= stallExit {
+								stalled.Store(true)
+								fmt.Fprintf(out, "\n[stall] no progress for %ds - aborting so it can resume\n", stallExit)
+								cancelAll()
+								return
+							}
+						}
+					}
+				}()
+			}
+
 			jobs := make(chan massEntry, concurrency)
 			for i := 0; i < concurrency; i++ {
 				wg.Add(1)
@@ -253,6 +311,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 							crawlRobots(hctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, robotsMax, decode, bucketSet, repoSet, tokenSet)
 						}
 						hcancel()
+						cp.add(e.host)
 						done.Add(1)
 					}
 				}()
@@ -273,6 +332,13 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 
 			wg.Wait()
 			close(stop)
+
+			if stalled.Load() {
+				_ = async.Close()
+				cp.close()
+				fmt.Fprintf(out, "[stall] exiting for resume (checkpoint keeps progress)\n")
+				os.Exit(75)
+			}
 
 			if checkBuckets && bucketCount(bucketSet) > 0 {
 				triageBuckets(ctx, out, bucketSet, engine, async, dedup, &findings, verifySem, decode, bucketObjects)
@@ -327,8 +393,77 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVar(&robotsMax, "robots-max", 15, "max extra URLs per host from robots/sitemap")
 	f.BoolVar(&rangeMode, "range", false, "HEAD first, then download only the head of large bodies")
 	f.IntVar(&rangeSizeKB, "range-size", 256, "bytes (KB) to fetch for large files with --range")
+	f.StringVar(&checkpoint, "checkpoint", "", "append completed hosts to this file and resume from it")
+	f.IntVar(&stallExit, "stall-exit", 90, "exit for resume if no host completes for N seconds (0 = off)")
 	return cmd
 }
+
+// checkpoint persists completed hosts so a run can resume after a network cut.
+type ckpt struct {
+	mu   sync.Mutex
+	f    *os.File
+	bw   *bufio.Writer
+	done map[string]struct{}
+	n    int
+}
+
+func openCkpt(path string) (*ckpt, error) {
+	c := &ckpt{done: map[string]struct{}{}}
+	if f, err := os.Open(path); err == nil {
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 1<<20), 1<<20)
+		for sc.Scan() {
+			if line := strings.TrimSpace(sc.Text()); line != "" {
+				c.done[line] = struct{}{}
+			}
+		}
+		f.Close()
+	}
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	c.f = out
+	c.bw = bufio.NewWriterSize(out, 1<<20)
+	return c, nil
+}
+
+func (c *ckpt) has(host string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.done[host]
+	return ok
+}
+
+func (c *ckpt) add(host string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if _, ok := c.done[host]; !ok {
+		_, _ = c.bw.WriteString(host)
+		_ = c.bw.WriteByte('\n')
+		c.done[host] = struct{}{}
+	}
+	c.n++
+	if c.n%512 == 0 {
+		_ = c.bw.Flush()
+	}
+	c.mu.Unlock()
+}
+
+func (c *ckpt) close() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	_ = c.bw.Flush()
+	_ = c.f.Close()
+	c.mu.Unlock()
+}
+
+func (c *ckpt) count() int { return len(c.done) }
 
 // fetchMaybeRange issues a HEAD first when --range is enabled and downloads
 // only a prefix of large bodies (dumps, archives).

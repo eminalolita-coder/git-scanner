@@ -15,6 +15,7 @@ type AsyncWriter struct {
 	inner   Writer
 	done    chan struct{}
 	dropped atomic.Int64
+	once    sync.Once
 }
 
 // NewAsync wraps w with a buffered channel and a single writer goroutine.
@@ -42,11 +43,15 @@ func (a *AsyncWriter) Write(f model.Finding) error {
 	return nil
 }
 
-// Close flushes and closes the inner writer.
+// Close flushes and closes the inner writer. Safe to call twice.
 func (a *AsyncWriter) Close() error {
-	close(a.ch)
-	<-a.done
-	return a.inner.Close()
+	var err error
+	a.once.Do(func() {
+		close(a.ch)
+		<-a.done
+		err = a.inner.Close()
+	})
+	return err
 }
 
 // Path returns the inner writer path.
