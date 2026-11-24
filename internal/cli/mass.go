@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"regexp"
 	"runtime"
 	"runtime/debug"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -71,6 +73,8 @@ func newMassCmd(opts *Options) *cobra.Command {
 		forgeMax      int
 		followRobots  bool
 		robotsMax     int
+		rangeMode     bool
+		rangeSizeKB   int
 	)
 
 	cmd := &cobra.Command{
@@ -131,6 +135,9 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			}
 
 			ctx := cmd.Context()
+			runCtx, sigStop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer sigStop()
+			ctx = runCtx
 			out := cmd.OutOrStdout()
 
 			fmt.Fprintf(out, "profile=%s concurrency=%d timeout=%ds body=%dKB method=%s gogc=%d cpu=%d\n",
@@ -227,7 +234,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 						var rootScheme string
 						for _, p := range paths {
 							requests.Add(1)
-							sch, code, body, err := fetchOne(ctx, client, scheme, e.host, p)
+							sch, code, body, err := fetchMaybeRange(ctx, client, scheme, e.host, p, rangeMode, rangeSizeKB)
 							if err != nil || code == 0 || len(body) == 0 {
 								continue
 							}
@@ -308,13 +315,38 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVar(&bucketObjects, "bucket-objects", 10, "objects to download per public bucket")
 	f.BoolVar(&followGit, "follow-git", false, "clone exposed .git repos and scan their history")
 	f.IntVar(&followMax, "follow-max", 20, "max repositories to clone")
-	f.IntVar(&gitDepth, "git-depth", 50, "history depth per cloned repo (0 = worktree only)")
+	f.IntVar(&gitDepth, "git-depth", 0, "history commits to scan (-1 = worktree only, 0 = unlimited)")
 	f.StringVar(&gitToken, "git-token", "", "token used to clone private repositories")
 	f.BoolVar(&followForge, "follow-forge", false, "expand the forge account of a found remote (uses a leaked token if any)")
 	f.IntVar(&forgeMax, "forge-max", 0, "repositories to clone per forge account (0 = list only)")
 	f.BoolVar(&followRobots, "follow-robots", false, "follow robots.txt/sitemap.xml paths")
 	f.IntVar(&robotsMax, "robots-max", 15, "max extra URLs per host from robots/sitemap")
+	f.BoolVar(&rangeMode, "range", false, "HEAD first, then download only the head of large bodies")
+	f.IntVar(&rangeSizeKB, "range-size", 256, "bytes (KB) to fetch for large files with --range")
 	return cmd
+}
+
+// fetchMaybeRange issues a HEAD first when --range is enabled and downloads
+// only a prefix of large bodies (dumps, archives).
+func fetchMaybeRange(ctx context.Context, c *fetch.Client, scheme, host, path string, enabled bool, limitKB int) (string, int, []byte, error) {
+	if !enabled {
+		return fetchOne(ctx, c, scheme, host, path)
+	}
+	sch := scheme
+	if sch == "auto" {
+		sch = "https"
+		if c.Head(ctx, "https", host, path) < 0 {
+			sch = "http"
+		}
+	}
+	size := c.Head(ctx, sch, host, path)
+	limit := int64(limitKB) << 10
+	if size > limit {
+		code, body, err := c.FetchRange(ctx, sch, host, path, 0, limit)
+		return sch, code, body, err
+	}
+	code, body, err := c.Fetch(ctx, sch, host, path)
+	return sch, code, body, err
 }
 
 // autoConcurrency picks a safe default from the CPU count.
@@ -678,8 +710,14 @@ func followGitRepos(ctx context.Context, out io.Writer, repos, emails *sync.Map,
 	fmt.Fprintf(out, "\n[git] following %d exposed repo(s) (depth=%d)...\n", len(jobs), depth)
 
 	gcfg := cfg.GitScanner
-	gcfg.ScanHistory = depth > 0
-	gcfg.MaxHistoryDepth = depth
+	// depth: <0 worktree only, 0 = unlimited history, >0 = N commits
+	if depth < 0 {
+		gcfg.ScanHistory = false
+		gcfg.MaxHistoryDepth = 0
+	} else {
+		gcfg.ScanHistory = true
+		gcfg.MaxHistoryDepth = depth
+	}
 	lim := cfg.ScanLimits
 	cloner := gitdump.New(gcfg, lim)
 
@@ -726,21 +764,29 @@ func (rs *repoScanner) scanURL(ctx context.Context, host string, candidates []st
 		}
 		err := rs.cloner.Dump(cctx, target, func(t model.Target, c gitdump.Content) {
 			files++
-			if rs.emails != nil && c.Email != "" {
-				if _, seen := rs.emails.Load(c.Email); !seen {
-					rs.emails.Store(c.Email, host)
-				}
-			}
-			if c.Author != "" {
-				rs.emit("git-author", "Commit author", c.Author+" <"+c.Email+">", t.Value, c.File, []string{"git", "identity"})
-			}
-			scanMassBody(rs.engine, rs.dedup, rs.w, false, cloneURL, c.File, c.Bytes, rs.findings, nil, nil, nil, rs.verifySem, rs.decode)
+			rs.scanContent(t, host, cloneURL, c)
 		})
 		cancel()
 		if err == nil {
 			rs.emit("git-repo", "Cloned exposed repository", cloneURL, host, "/", []string{"git"})
 			fmt.Fprintf(rs.out, "  [git] %s cloned, %d blob(s) scanned\n", cloneURL, files)
 			return true
+		}
+		// an expired token makes public repos fail: retry without it
+		if token != "" {
+			cctx2, cancel2 := context.WithTimeout(ctx, 180*time.Second)
+			target.Token = ""
+			files = 0
+			err2 := rs.cloner.Dump(cctx2, target, func(t model.Target, c gitdump.Content) {
+				files++
+				rs.scanContent(t, host, cloneURL, c)
+			})
+			cancel2()
+			if err2 == nil {
+				rs.emit("git-repo", "Cloned exposed repository", cloneURL, host, "/", []string{"git"})
+				fmt.Fprintf(rs.out, "  [git] %s cloned without token, %d blob(s)\n", cloneURL, files)
+				return true
+			}
 		}
 		lastErr = err
 	}
@@ -762,6 +808,23 @@ func (rs *repoScanner) scanURL(ctx context.Context, host string, candidates []st
 	rs.emit("git-clone-failed", "Repository could not be read", host, host, "/", []string{"git"})
 	fmt.Fprintf(rs.out, "  [git] %s -> %v\n", host, lastErr)
 	return false
+}
+
+// scanContent feeds one git blob to the scanner, keeping provenance.
+func (rs *repoScanner) scanContent(t model.Target, host, label string, c gitdump.Content) {
+	if rs.emails != nil && c.Email != "" {
+		if _, seen := rs.emails.Load(c.Email); !seen {
+			rs.emails.Store(c.Email, host)
+		}
+	}
+	if c.Author != "" {
+		rs.emit("git-author", "Commit author", c.Author+" <"+c.Email+">", label, c.File, []string{"git", "identity"})
+	}
+	path := c.File
+	if c.Deleted {
+		path = c.File + " (deleted)"
+	}
+	scanMassBody(rs.engine, rs.dedup, rs.w, false, label, path, c.Bytes, rs.findings, nil, nil, nil, rs.verifySem, rs.decode)
 }
 
 func (rs *repoScanner) emit(ruleID, desc, secret, host, path string, tags []string) {

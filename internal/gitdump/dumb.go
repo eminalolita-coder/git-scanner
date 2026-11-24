@@ -28,7 +28,7 @@ type DumbOptions struct {
 // DefaultDumbOptions returns conservative limits.
 func DefaultDumbOptions() DumbOptions {
 	return DumbOptions{
-		MaxCommits:   20,
+		MaxCommits:   0, // 0 = unlimited (bounded by objects/bytes)
 		MaxObjects:   3000,
 		MaxBlobBytes: 1 << 20,
 		MaxTotal:     64 << 20,
@@ -207,8 +207,11 @@ func (d *dumber) walk(tip string) {
 		switch typ {
 		case "commit":
 			d.total += int64(len(body))
-			if d.commits < d.o.MaxCommits {
-				d.commits++
+			unlimited := d.o.MaxCommits == 0
+			if unlimited || d.commits < d.o.MaxCommits {
+				if !unlimited {
+					d.commits++
+				}
 				meta := body
 				if i := bytes.Index(body, []byte("\n\n")); i > 0 {
 					meta = body[:i]
@@ -217,10 +220,8 @@ func (d *dumber) walk(tip string) {
 				for _, t := range objectRefs(body, "tree") {
 					queue = append(queue, t)
 				}
-				if d.commits < d.o.MaxCommits {
-					for _, p := range objectRefs(body, "parent") {
-						queue = append(queue, p)
-					}
+				for _, p := range objectRefs(body, "parent") {
+					queue = append(queue, p)
 				}
 			}
 		case "tag":

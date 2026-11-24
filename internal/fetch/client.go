@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -98,6 +99,58 @@ func New(o Options) *Client {
 		method:  strings.ToUpper(strings.TrimSpace(o.Method)),
 		noBody:  o.NoBody,
 	}
+}
+
+// Head issues a HEAD request and returns the Content-Length, or -1.
+func (c *Client) Head(ctx context.Context, scheme, host, path string) int64 {
+	if path == "" {
+		path = "/"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, scheme+"://"+host+path, nil)
+	if err != nil {
+		return -1
+	}
+	req.Header.Set("User-Agent", c.ua)
+	c.reqs.Add(1)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return -1
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength > 0 {
+		return resp.ContentLength
+	}
+	return -1
+}
+
+// FetchRange downloads only [start, start+length) using a Range request. Its
+// body is not capped by MaxBody, so large dumps can be partially scanned.
+func (c *Client) FetchRange(ctx context.Context, scheme, host, path string, start, length int64) (int, []byte, error) {
+	if path == "" {
+		path = "/"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+host+path, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("User-Agent", c.ua)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, start+length-1))
+	c.reqs.Add(1)
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		c.errs.Add(1)
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		// server ignored the range: read at most length bytes
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, length))
+		return resp.StatusCode, body, nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, length+4096))
+	return resp.StatusCode, body, nil
 }
 
 // Resolver exposes the underlying resolver.

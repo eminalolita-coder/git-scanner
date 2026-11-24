@@ -23,13 +23,14 @@ import (
 
 // Content is a blob of scannable text with its provenance.
 type Content struct {
-	Bytes  []byte
-	File   string
-	Commit string
-	Branch string
-	Author string
-	Email  string
-	Date   string
+	Bytes   []byte
+	File    string
+	Commit  string
+	Branch  string
+	Author  string
+	Email   string
+	Date    string
+	Deleted bool // present in the parent commit, removed by this one
 }
 
 // Handler consumes extracted content.
@@ -124,7 +125,8 @@ func (c *Cloner) scanWorktree(t model.Target, dir string, h Handler) error {
 }
 
 func (c *Cloner) scanHistory(t model.Target, repo *git.Repository, h Handler) {
-	iter, err := repo.Log(&git.LogOptions{Order: git.LogOrderCommitterTime})
+	// walk every ref (all branches and tags), oldest first
+	iter, err := repo.Log(&git.LogOptions{Order: git.LogOrderCommitterTime, All: true})
 	if err != nil {
 		return
 	}
@@ -139,22 +141,97 @@ func (c *Cloner) scanHistory(t model.Target, repo *git.Repository, h Handler) {
 			return nil
 		}
 		_ = files.ForEach(func(f *object.File) error {
-			if f.Size > c.lim.MaxBlobSizeBytes || excluded(f.Name) {
+			if excluded(f.Name) {
 				return nil
 			}
-			content, err := f.Contents()
-			if err != nil {
-				return nil
-			}
-			h(t, Content{
-				Bytes:  []byte(content),
-				File:   f.Name,
+			prov := Content{
 				Commit: commit.Hash.String(),
 				Author: commit.Author.Name,
 				Email:  commit.Author.Email,
 				Date:   commit.Author.When.Format(time.RFC3339),
-			})
+			}
+			content, err := f.Contents()
+			if err == nil {
+				if int64(len(content)) > c.lim.MaxBlobSizeBytes {
+					return nil
+				}
+				prov.Bytes = []byte(content)
+				prov.File = f.Name
+				h(t, prov)
+				return nil
+			}
+			// the file was deleted by this commit: recover it from the parent
+			if c.lim.ScanGitNotes || true {
+				if pc, perr := c.fileFromParent(commit, f.Name); perr == nil && pc != nil {
+					prov.Bytes = pc
+					prov.File = f.Name
+					prov.Deleted = true
+					h(t, prov)
+				}
+			}
 			return nil
+		})
+		return nil
+	})
+
+	// stash entries are not reachable from any branch
+	if c.lim.ScanStash {
+		c.scanStash(t, repo, h)
+	}
+}
+
+// fileFromParent returns the content of name in the first parent commit.
+func (c *Cloner) fileFromParent(commit *object.Commit, name string) ([]byte, error) {
+	if commit.NumParents() == 0 {
+		return nil, nil
+	}
+	parent, err := commit.Parent(0)
+	if err != nil {
+		return nil, err
+	}
+	f, err := parent.File(name)
+	if err != nil {
+		return nil, err
+	}
+	if f.Size > c.lim.MaxBlobSizeBytes {
+		return nil, nil
+	}
+	content, err := f.Contents()
+	if err != nil {
+		return nil, err
+	}
+	return []byte(content), nil
+}
+
+// scanStash walks refs/stash commits and scans their content.
+func (c *Cloner) scanStash(t model.Target, repo *git.Repository, h Handler) {
+	ref, err := repo.Reference("refs/stash", true)
+	if err != nil || ref == nil {
+		return
+	}
+	commit, err := repo.CommitObject(ref.Hash())
+	if err != nil {
+		return
+	}
+	files, err := commit.Files()
+	if err != nil {
+		return
+	}
+	_ = files.ForEach(func(f *object.File) error {
+		if excluded(f.Name) {
+			return nil
+		}
+		content, err := f.Contents()
+		if err != nil || int64(len(content)) > c.lim.MaxBlobSizeBytes {
+			return nil
+		}
+		h(t, Content{
+			Bytes:  []byte(content),
+			File:   "stash:" + f.Name,
+			Commit: commit.Hash.String(),
+			Author: commit.Author.Name,
+			Email:  commit.Author.Email,
+			Date:   commit.Author.When.Format(time.RFC3339),
 		})
 		return nil
 	})

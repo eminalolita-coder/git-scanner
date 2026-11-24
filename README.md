@@ -81,7 +81,8 @@ git-scanner check ghp_012345678901234567890123456789012345
 
 ```sh
 git-scanner mass hosts.txt --paths "/,.git/HEAD,.git/config" --decode
-git-scanner mass hosts.txt --follow-git --git-depth 50 --git-token <token>
+git-scanner mass hosts.txt --follow-git --git-depth 0 --git-token <token>
+git-scanner mass hosts.txt --range --range-size 256 --paths "/dump.sql,/backup.zip"
 git-scanner mass hosts.txt --follow-git --follow-forge --forge-max 10
 git-scanner mass hosts.txt --crawl-js --check-buckets --bucket-objects 5
 git-scanner discover hosts.txt --scan
@@ -261,6 +262,8 @@ Core and recon features are implemented and tested:
 - [x] Bucket → content chain (discovered S3 buckets triaged then their objects scanned)
 - [x] `.git` → clone/history chain (`--follow-git`), incl. dumb-protocol reader for statically served `.git`
 - [x] `.git` → forge → account expansion (`--follow-forge`), using a leaked token when present
+- [x] Full-history scanning incl. deleted files and stashes (`--git-depth 0`)
+- [x] HEAD + `Range` mode for large dumps (`--range`, `--range-size`)
 
 ## Development
 
