@@ -180,6 +180,11 @@ func extractedRules() []Pattern {
 			ID: "php-array-secret", Description: "PHP array secret assignment",
 			Regex:       `(?i)(?:password|secret|key|token)'\s*=>\s*'([^']{5,})'`,
 			SecretGroup: 1, Keywords: []string{"=>"}, Tags: []string{"php"},
+			Allowlist: []string{
+				`(?i)^(secret|real-secret|wrong-key|anything-at-all|value|test|foo|bar|baz|null|true|false)$`,
+				`(?i)synthetic`,
+				`^[a-z_\-]+:$`,
+			},
 		},
 		{
 			ID: "js-fetch-endpoint", Description: "JavaScript fetch/endpoint",

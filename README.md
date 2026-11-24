@@ -81,6 +81,7 @@ git-scanner check ghp_012345678901234567890123456789012345
 
 ```sh
 git-scanner mass hosts.txt --paths "/,.git/HEAD,.git/config" --decode
+git-scanner mass hosts.txt --follow-git --git-depth 50 --git-token <token>
 git-scanner mass hosts.txt --crawl-js --check-buckets --bucket-objects 5
 git-scanner discover hosts.txt --scan
 git-scanner js https://app.example.com
@@ -257,6 +258,7 @@ Core and recon features are implemented and tested:
 - [x] High-throughput `mass` mode (pooled DNS, dial-by-IP, worker pool, async writer)
 - [x] JS crawl from a mass scan (bundles followed, base64/hex decoding, endpoints)
 - [x] Bucket → content chain (discovered S3 buckets triaged then their objects scanned)
+- [x] `.git` → clone/history chain (`--follow-git`), incl. dumb-protocol reader for statically served `.git`
 
 ## Development
 
