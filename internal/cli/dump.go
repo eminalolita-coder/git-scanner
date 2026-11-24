@@ -7,18 +7,21 @@ import (
 
 	"github.com/eminalolita-coder/git-scanner/internal/dumper"
 	"github.com/eminalolita-coder/git-scanner/internal/model"
+	"github.com/eminalolita-coder/git-scanner/internal/output"
 )
 
 func newDumpCmd(opts *Options) *cobra.Command {
 	var (
-		token   string
-		user    string
-		forge   string
-		org     string
-		owner   string
-		limit   int
-		scan    bool
-		private bool
+		token     string
+		user      string
+		forge     string
+		org       string
+		owner     string
+		limit     int
+		scan      bool
+		private   bool
+		outputDir string
+		format    string
 	)
 
 	cmd := &cobra.Command{
@@ -78,11 +81,27 @@ clone and scan every discovered repository.`,
 				if err != nil {
 					return err
 				}
+				if outputDir != "" {
+					cfg.Output.Directory = outputDir
+				}
+				if format != "" {
+					cfg.Output.Format = format
+				}
 				engine, err := buildEngine(cfg, "")
 				if err != nil {
 					return err
 				}
-				runScanStream(cmd.Context(), cfg, engine, out, targets)
+				if outputDir != "" {
+					w, err := output.New(cfg.Output.Directory, cfg.Output.Format)
+					if err != nil {
+						return err
+					}
+					defer w.Close()
+					fmt.Fprintf(out, "findings -> %s\n", w.Path())
+					runScanWriter(cmd.Context(), cfg, engine, w, targets, out)
+				} else {
+					runScanStream(cmd.Context(), cfg, engine, out, targets)
+				}
 			}
 			return nil
 		},
@@ -94,6 +113,8 @@ clone and scan every discovered repository.`,
 	f.StringVar(&forge, "forge", "", "force forge: github|gitlab|gitea|gogs|bitbucket|azuredevops|gerrit")
 	f.StringVar(&org, "org", "", "organisation (azure devops)")
 	f.StringVar(&owner, "owner", "", "list a specific owner's repositories (works without a token)")
+	f.StringVarP(&outputDir, "output", "o", "", "write findings of --scan to a directory")
+	f.StringVar(&format, "format", "jsonl", "findings format when -o is used")
 	f.IntVarP(&limit, "limit", "n", 100, "max repositories to list")
 	f.BoolVar(&scan, "scan", false, "clone and scan each repository")
 	f.BoolVar(&private, "private-only", false, "list only private repositories")
