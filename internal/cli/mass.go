@@ -1158,10 +1158,13 @@ func triageBuckets(ctx context.Context, out io.Writer, buckets *sync.Map, engine
 		if maxObjects <= 0 {
 			continue
 		}
-		keys := r.Sample
-		if len(keys) > maxObjects {
-			keys = keys[:maxObjects]
+		var keys []string
+		if all, err := aws.ListObjects(ctx, nil, r.Name, r.Region, 1000); err == nil && len(all) > 0 {
+			keys = all
+		} else {
+			keys = r.Sample
 		}
+		keys = selectObjects(keys, DefaultObjectFilter, maxObjects)
 		scanned := 0
 		for _, k := range keys {
 			u := aws.PublicObjectURL(r.Name, r.Region, k)

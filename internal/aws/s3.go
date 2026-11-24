@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -157,6 +158,59 @@ func firstLabel(url string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// parseListingPage returns the keys of a listing page and the continuation
+// token when the result is truncated.
+func parseListingPage(body []byte) ([]string, string) {
+	var out struct {
+		IsTruncated           bool   `xml:"IsTruncated"`
+		NextContinuationToken string `xml:"NextContinuationToken"`
+		Contents              []struct {
+			Key string `xml:"Key"`
+		} `xml:"Contents"`
+	}
+	_ = xml.Unmarshal(body, &out)
+	var keys []string
+	for _, c := range out.Contents {
+		keys = append(keys, c.Key)
+	}
+	if !out.IsTruncated {
+		return keys, ""
+	}
+	return keys, out.NextContinuationToken
+}
+
+// ListObjects lists up to max keys of a public bucket, paginating as needed.
+func ListObjects(ctx context.Context, client *http.Client, bucket, region string, max int) ([]string, error) {
+	if max <= 0 {
+		max = 1000
+	}
+	var keys []string
+	token := ""
+	for len(keys) < max {
+		u := bucketBase(bucket, region) + "/?list-type=2&max-keys=1000"
+		if token != "" {
+			u += "&continuation-token=" + url.QueryEscape(token)
+		}
+		code, body, err := anonGet(ctx, client, bucket, u)
+		if err != nil {
+			return keys, err
+		}
+		if code != 200 {
+			return keys, fmt.Errorf("status %d", code)
+		}
+		ks, next := parseListingPage(body)
+		keys = append(keys, ks...)
+		if next == "" {
+			break
+		}
+		token = next
+	}
+	if len(keys) > max {
+		keys = keys[:max]
+	}
+	return keys, nil
 }
 
 func parseListing(body []byte) ([]string, int) {

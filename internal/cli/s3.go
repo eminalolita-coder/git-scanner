@@ -32,6 +32,8 @@ func newS3Cmd(opts *Options) *cobra.Command {
 		maxSizeKB    int
 		outputDir    string
 		format       string
+		objFilter    string
+		listMax      int
 	)
 
 	cmd := &cobra.Command{
@@ -129,7 +131,7 @@ every bucket in an AWS account and triage them.`,
 			fmt.Fprintf(out, "\n%d public / %d checked\n", public, len(results))
 
 			if doScan {
-				scanPublicObjects(ctx, out, client, results, sc, maxKeys, maxSizeKB, concurrency)
+				scanPublicObjects(ctx, out, client, results, sc, maxKeys, maxSizeKB, concurrency, objFilter, listMax)
 			}
 			return nil
 		},
@@ -147,6 +149,8 @@ every bucket in an AWS account and triage them.`,
 	f.IntVarP(&concurrency, "concurrency", "C", 20, "concurrency")
 	f.StringVarP(&outputDir, "output", "o", "", "write findings to a directory (jsonl/csv/txt)")
 	f.StringVar(&format, "format", "jsonl", "output format when -o is used")
+	f.StringVar(&objFilter, "filter", DefaultObjectFilter, "regex selecting which objects to scan")
+	f.IntVar(&listMax, "list-max", 1000, "objects to list per bucket before filtering")
 	return cmd
 }
 
@@ -184,7 +188,7 @@ func firstN(s []string, n int) []string {
 	return s[:n]
 }
 
-func scanPublicObjects(ctx context.Context, out io.Writer, client *http.Client, results []aws.BucketAccess, sc *scanner.Scanner, maxKeys, maxSizeKB, concurrency int) {
+func scanPublicObjects(ctx context.Context, out io.Writer, client *http.Client, results []aws.BucketAccess, sc *scanner.Scanner, maxKeys, maxSizeKB, concurrency int, filter string, listMax int) {
 	if maxSizeKB <= 0 {
 		maxSizeKB = 512
 	}
@@ -201,11 +205,15 @@ func scanPublicObjects(ctx context.Context, out io.Writer, client *http.Client, 
 			defer wg.Done()
 			defer func() { <-sem }()
 			keys := b.Sample
+			// list further and prioritise sensitive names
+			if listMax > 0 {
+				if all, err := aws.ListObjects(ctx, client, b.Name, b.Region, listMax); err == nil && len(all) > 0 {
+					keys = all
+				}
+			}
+			keys = selectObjects(keys, filter, maxKeys)
 			if len(keys) == 0 {
 				return
-			}
-			if len(keys) > maxKeys {
-				keys = keys[:maxKeys]
 			}
 			for _, key := range keys {
 				u := aws.PublicObjectURL(b.Name, b.Region, key)

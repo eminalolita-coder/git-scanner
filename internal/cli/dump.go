@@ -15,6 +15,7 @@ func newDumpCmd(opts *Options) *cobra.Command {
 		user    string
 		forge   string
 		org     string
+		owner   string
 		limit   int
 		scan    bool
 		private bool
@@ -47,7 +48,13 @@ clone and scan every discovered repository.`,
 			if user != "" {
 				client.Token = user + ":" + token
 			}
-			repos, err := client.List(cmd.Context())
+			var repos []dumper.Repo
+			var err error
+			if owner != "" {
+				repos, err = client.ListOwner(cmd.Context(), owner)
+			} else {
+				repos, err = client.List(cmd.Context())
+			}
 			if err != nil {
 				return err
 			}
@@ -86,6 +93,7 @@ clone and scan every discovered repository.`,
 	f.StringVarP(&user, "user", "u", "", "username (gerrit / bitbucket)")
 	f.StringVar(&forge, "forge", "", "force forge: github|gitlab|gitea|gogs|bitbucket|azuredevops|gerrit")
 	f.StringVar(&org, "org", "", "organisation (azure devops)")
+	f.StringVar(&owner, "owner", "", "list a specific owner's repositories (works without a token)")
 	f.IntVarP(&limit, "limit", "n", 100, "max repositories to list")
 	f.BoolVar(&scan, "scan", false, "clone and scan each repository")
 	f.BoolVar(&private, "private-only", false, "list only private repositories")
