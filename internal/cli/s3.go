@@ -30,6 +30,8 @@ func newS3Cmd(opts *Options) *cobra.Command {
 		maxKeys      int
 		concurrency  int
 		maxSizeKB    int
+		outputDir    string
+		format       string
 	)
 
 	cmd := &cobra.Command{
@@ -83,16 +85,32 @@ every bucket in an AWS account and triage them.`,
 			}
 
 			var sc *scanner.Scanner
+			var w output.Writer
 			if doScan {
 				cfg, err := loadConfig(opts)
 				if err != nil {
 					return err
 				}
+				if outputDir != "" {
+					cfg.Output.Directory = outputDir
+				}
+				if format != "" {
+					cfg.Output.Format = format
+				}
 				engine, err := buildEngine(cfg, "")
 				if err != nil {
 					return err
 				}
-				sc = scanner.New(scanner.Options{Config: cfg, Engine: engine, Writer: output.NewStream(out)})
+				if outputDir != "" || cfg.Output.Format != "" && outputDir != "" {
+					w, err = output.New(cfg.Output.Directory, cfg.Output.Format)
+					if err != nil {
+						return err
+					}
+					defer w.Close()
+				} else {
+					w = output.NewStream(out)
+				}
+				sc = scanner.New(scanner.Options{Config: cfg, Engine: engine, Writer: w})
 			}
 
 			results := aws.ScanPublicBuckets(ctx, client, buckets, concurrency)
@@ -127,6 +145,8 @@ every bucket in an AWS account and triage them.`,
 	f.IntVar(&maxKeys, "max-keys", 50, "objects to fetch per bucket when scanning")
 	f.IntVar(&maxSizeKB, "max-size", 512, "max object size in KB to download")
 	f.IntVarP(&concurrency, "concurrency", "C", 20, "concurrency")
+	f.StringVarP(&outputDir, "output", "o", "", "write findings to a directory (jsonl/csv/txt)")
+	f.StringVar(&format, "format", "jsonl", "output format when -o is used")
 	return cmd
 }
 

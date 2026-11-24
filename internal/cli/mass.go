@@ -625,6 +625,13 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 					f.Extra = map[string]string{"secret": sec, "account_hint": "pair from same body"}
 				}
 			}
+			// vault tokens need a server address: hint with the current host
+			for _, t := range m.Pattern.Tags {
+				if t == "vault" {
+					ensureExtra(&f)["host"] = host
+					break
+				}
+			}
 			if verify {
 				if cs := checkers.For(f.RuleID, f.Tags); len(cs) > 0 {
 					verifySem <- struct{}{}

@@ -6,8 +6,13 @@ func extraRules() []Pattern {
 	return []Pattern{
 		{
 			ID: "vault-token", Description: "HashiCorp Vault token",
-			Regex:       `\b(hvs\.[A-Za-z0-9_-]{20,}|s\.[A-Za-z0-9]{24})\b`,
-			SecretGroup: 1, Keywords: []string{"hvs.", "s."}, Tags: []string{"vault"},
+			Regex:       `\b(hvs\.[A-Za-z0-9_-]{20,})\b`,
+			SecretGroup: 1, Keywords: []string{"hvs."}, Tags: []string{"vault"},
+		},
+		{
+			ID: "vault-service-token", Description: "HashiCorp Vault service token (legacy s.)",
+			Regex:       `(?:^|[^\w])s\.([A-Za-z0-9]{24})(?:[^\w]|$)`,
+			SecretGroup: 1, Keywords: []string{"s."}, Tags: []string{"vault"},
 		},
 		{
 			ID: "doppler-token", Description: "Doppler token",
