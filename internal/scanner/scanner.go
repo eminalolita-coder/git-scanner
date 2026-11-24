@@ -137,7 +137,7 @@ func (s *Scanner) scanTarget(ctx context.Context, t model.Target) error {
 	case model.KindGitRepo:
 		cloner := gitdump.New(s.cfg.GitScanner, s.cfg.ScanLimits)
 		if s.proxy != nil {
-			cloner.Proxy = s.proxy.GitProxy()
+			cloner.Proxy = s.proxy.GitProxyNext()
 		}
 		if t.GitHost == "" {
 			t.GitHost = gitdump.HostFromURL(t.Value)

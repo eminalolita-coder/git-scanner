@@ -92,7 +92,30 @@ func (m *Manager) GitProxy() *transport.ProxyOptions {
 	if !m.Enabled() {
 		return nil
 	}
-	u, err := url.Parse(m.urls[0])
+	return proxyOptionsFrom(m.urls[0])
+}
+
+// GitProxyNext returns transport.ProxyOptions for the next clone, rotating
+// round-robin. go-git feeds the URL to net/http, which supports http, https,
+// socks4/socks5 and socks5h schemes.
+func (m *Manager) GitProxyNext() *transport.ProxyOptions {
+	if !m.Enabled() {
+		return nil
+	}
+	u := m.next()
+	if u == nil {
+		return nil
+	}
+	opts := &transport.ProxyOptions{URL: u.Scheme + "://" + u.Host}
+	if u.User != nil {
+		opts.Username = u.User.Username()
+		opts.Password, _ = u.User.Password()
+	}
+	return opts
+}
+
+func proxyOptionsFrom(raw string) *transport.ProxyOptions {
+	u, err := url.Parse(raw)
 	if err != nil {
 		return nil
 	}

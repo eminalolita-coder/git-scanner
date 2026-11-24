@@ -18,6 +18,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 		enumerate    bool
 		deep         bool
 		chain        bool
+		envVars      bool
 		externalID   string
 		depth        int
 		asJSON       bool
@@ -67,6 +68,12 @@ func newAWSCmd(opts *Options) *cobra.Command {
 				printEnum(out, res, asJSON)
 			}
 
+			if envVars {
+				lambdas := aws.ListLambdaEnvironments(ctx, nil, creds, 25)
+				ecs := aws.ListECSEnvironments(ctx, nil, creds, 25)
+				printEnvs(out, lambdas, ecs, asJSON)
+			}
+
 			if chain {
 				roles := aws.ListRolesForChain(ctx, nil, creds)
 				links := aws.AssumeChains(ctx, nil, creds, roles, aws.ChainOptions{
@@ -95,6 +102,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 	f.BoolVarP(&enumerate, "enumerate", "e", false, "list S3 buckets and IAM users")
 	f.BoolVar(&deep, "deep", false, "full multi-service enumeration")
 	f.BoolVar(&chain, "chain", false, "walk assume-role chains")
+	f.BoolVar(&envVars, "env", false, "extract Lambda and ECS environment variables")
 	f.StringVar(&externalID, "external-id", "", "external id for AssumeRole")
 	f.IntVar(&depth, "depth", 2, "max assume-role chain depth")
 	f.StringVar(&filter, "filter", "", "regex filter on role name/arn")
@@ -134,6 +142,39 @@ func printEnum(out io.Writer, res aws.EnumResult, asJSON bool) {
 	section(out, "IAM policies", namedNames(res.Policies))
 	if len(res.Errors) > 0 {
 		fmt.Fprintf(out, "\n%d service error(s)\n", len(res.Errors))
+	}
+}
+
+func printEnvs(out io.Writer, lambdas []aws.LambdaEnv, ecs []aws.ECSEnv, asJSON bool) {
+	if asJSON {
+		data, _ := json.MarshalIndent(map[string]any{"lambda": lambdas, "ecs": ecs}, "", "  ")
+		fmt.Fprintf(out, "\n%s\n", data)
+		return
+	}
+	if len(lambdas) == 0 && len(ecs) == 0 {
+		fmt.Fprintln(out, "\nno Lambda/ECS environment found")
+		return
+	}
+	for _, l := range lambdas {
+		fmt.Fprintf(out, "\n[lambda] %s (%s, %s) - %d var(s)\n", l.Name, l.Runtime, l.Region, len(l.Vars))
+		if l.Role != "" {
+			fmt.Fprintf(out, "  role: %s\n", l.Role)
+		}
+		for _, v := range l.Vars {
+			fmt.Fprintf(out, "  %s=%s\n", v.Key, truncate(v.Value, 90))
+		}
+	}
+	for _, e := range ecs {
+		fmt.Fprintf(out, "\n[ecs] %s/%s -> %s\n", e.Cluster, e.Service, e.TaskDefinition)
+		for _, c := range e.Containers {
+			fmt.Fprintf(out, "  container %s (%s)\n", c.Name, c.Image)
+			for _, v := range c.Vars {
+				fmt.Fprintf(out, "    %s=%s\n", v.Key, truncate(v.Value, 90))
+			}
+			for _, s := range c.Secrets {
+				fmt.Fprintf(out, "    %s <- %s\n", s.Key, s.SecretRef)
+			}
+		}
 	}
 }
 

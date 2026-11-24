@@ -19,6 +19,9 @@ func TestDisabled(t *testing.T) {
 	if m.ProxyFunc() != nil {
 		t.Error("expected nil proxy func when disabled")
 	}
+	if m.GitProxyNext() != nil {
+		t.Error("expected nil git proxy when disabled")
+	}
 }
 
 func TestLoadFileAndRotate(t *testing.T) {
@@ -33,7 +36,6 @@ func TestLoadFileAndRotate(t *testing.T) {
 	if !m.Enabled() {
 		t.Fatal("expected enabled")
 	}
-	// first two calls should yield the two distinct proxies
 	a := m.next()
 	b := m.next()
 	if a == nil || b == nil {
@@ -42,8 +44,32 @@ func TestLoadFileAndRotate(t *testing.T) {
 	if a.String() == b.String() {
 		t.Errorf("expected rotation, got %q twice", a)
 	}
-	opts := m.GitProxy()
-	if opts == nil || opts.Username != "" && opts.URL == "" {
+	if opts := m.GitProxy(); opts == nil || opts.URL == "" {
 		t.Errorf("bad git proxy opts: %+v", opts)
+	}
+}
+
+func TestGitProxyNextRotatesAndKeepsSocks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "socks.txt")
+	_ = os.WriteFile(path, []byte("socks5://127.0.0.1:1080\nsocks5://user:pw@127.0.0.1:1081\n"), 0o644)
+
+	m, err := New(config.Proxy{Enabled: true, Protocol: "socks5", File: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := m.GitProxyNext()
+	second := m.GitProxyNext()
+	if first == nil || second == nil {
+		t.Fatal("nil proxy")
+	}
+	if first.URL == second.URL {
+		t.Errorf("expected rotation, got %q twice", first.URL)
+	}
+	if first.URL[:9] != "socks5://" {
+		t.Errorf("scheme not preserved: %q", first.URL)
+	}
+	if first.Username == "" && second.Username == "" {
+		t.Error("expected one proxy with credentials")
 	}
 }

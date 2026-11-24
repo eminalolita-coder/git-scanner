@@ -79,6 +79,7 @@ git-scanner dump dev.azure.com --org myorg -T <pat> --scan
 git-scanner dump gerrit.ex.com -u me -T me:httppass
 git-scanner aws AKIAIOSFODNN7EXAMPLE --secret-key wJalr… --deep --json
 git-scanner aws AKIA… --secret-key … --chain --depth 3
+git-scanner aws AKIA… --secret-key … --env          # Lambda / ECS env vars
 git-scanner s3 my-bucket other-bucket --scan
 git-scanner s3 --account --access-key AKIA… --secret-key … --scan
 ```
@@ -141,9 +142,9 @@ internal/source      target classification (file/dir/url/repo)
 internal/patterns    regex engine + built-in rules
 internal/analyzer    base64/hex/url decoding, binary strings
 internal/checkers    provider verification (incl. AWS SigV4)
-internal/aws         SigV4, STS (assume-role), deep enumeration, S3 public triage
+internal/aws         SigV4, STS (assume-role), deep enumeration, S3 public triage, Lambda/ECS env
 internal/dumper      multi-forge repository enumeration (incl. Gerrit, Azure DevOps)
-internal/proxy       proxy pool + rotation
+internal/proxy       rotating proxy pool (http/https/socks5) for scan, checkers and clone
 internal/output      jsonl/csv/txt writers + dedup + stream
 internal/webhook     telegram/discord
 internal/scanners    .env cracking + recovered path wordlists
@@ -166,8 +167,8 @@ Core and recon features are implemented and tested:
 - [x] STS assume-role chain walking (privilege escalation routes)
 - [x] Public S3 bucket detection and object scanning
 - [x] Deep multi-service `aws` enumeration (Secrets, SSM, Lambda, CFN, ECR, RDS, EC2, SQS/SNS, DynamoDB, KMS)
-- [ ] SOCKS proxy for git clone rotation (go-git limitation)
-- [ ] Lambda / ECS environment variable extraction
+- [x] SOCKS proxy rotation for git cloning
+- [x] Lambda / ECS environment variable extraction
 
 ## Development
 
