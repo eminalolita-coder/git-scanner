@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/eminalolita-coder/git-scanner/internal/aws"
 	"github.com/eminalolita-coder/git-scanner/internal/checkers"
 	"github.com/eminalolita-coder/git-scanner/internal/config"
+	"github.com/eminalolita-coder/git-scanner/internal/dumper"
 	"github.com/eminalolita-coder/git-scanner/internal/fetch"
 	"github.com/eminalolita-coder/git-scanner/internal/gitdump"
 	"github.com/eminalolita-coder/git-scanner/internal/jscracker"
@@ -64,6 +66,8 @@ func newMassCmd(opts *Options) *cobra.Command {
 		followMax     int
 		gitDepth      int
 		gitToken      string
+		followForge   bool
+		forgeMax      int
 	)
 
 	cmd := &cobra.Command{
@@ -182,6 +186,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			)
 			bucketSet := &sync.Map{}
 			repoSet := &sync.Map{}
+			tokenSet := &sync.Map{}
 			verifySem := make(chan struct{}, 256)
 			start := time.Now()
 
@@ -225,10 +230,10 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 							if p == "/" {
 								rootBody, rootScheme = body, sch
 							}
-							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings, bucketSet, repoSet, verifySem, decode)
+							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings, bucketSet, repoSet, tokenSet, verifySem, decode)
 						}
 						if crawlJS && len(rootBody) > 0 && jscracker.IsHTML(rootBody) {
-							crawlScripts(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, rootBody, jsMax, decode, bucketSet, repoSet)
+							crawlScripts(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, rootBody, jsMax, decode, bucketSet, repoSet, tokenSet)
 						}
 						done.Add(1)
 					}
@@ -256,6 +261,9 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			}
 			if followGit && mapLen(repoSet) > 0 {
 				followGitRepos(ctx, out, repoSet, cfg, engine, async, dedup, &findings, verifySem, decode, followMax, gitDepth, gitToken)
+			}
+			if followForge && mapLen(repoSet) > 0 {
+				followForgeAccount(ctx, out, repoSet, tokenSet, cfg, engine, async, dedup, &findings, verifySem, decode, forgeMax, gitToken)
 			}
 
 			el := time.Since(start).Seconds()
@@ -295,6 +303,8 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVar(&followMax, "follow-max", 20, "max repositories to clone")
 	f.IntVar(&gitDepth, "git-depth", 50, "history depth per cloned repo (0 = worktree only)")
 	f.StringVar(&gitToken, "git-token", "", "token used to clone private repositories")
+	f.BoolVar(&followForge, "follow-forge", false, "expand the forge account of a found remote (uses a leaked token if any)")
+	f.IntVar(&forgeMax, "forge-max", 0, "repositories to clone per forge account (0 = list only)")
 	return cmd
 }
 
@@ -386,7 +396,7 @@ func fetchOne(ctx context.Context, c *fetch.Client, scheme, host, path string) (
 	return scheme, code, body, err
 }
 
-func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64, buckets, repos *sync.Map, verifySem chan struct{}, decode bool) {
+func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64, buckets, repos, tokens *sync.Map, verifySem chan struct{}, decode bool) {
 	blobs := [][]byte{body}
 	if decode && len(body) < 4<<20 {
 		blobs = append(blobs, analyzer.Deobfuscate(body, analyzer.DefaultOptions())...)
@@ -409,6 +419,11 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 			case "git-config-remote":
 				if repos != nil {
 					repos.Store(host, m.Secret)
+				}
+			}
+			if tokens != nil && isTokenRule(m.Pattern.ID) {
+				if _, ok := tokens.Load(host); !ok {
+					tokens.Store(host, m.Secret)
 				}
 			}
 			f := model.Finding{
@@ -450,7 +465,7 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 
 // crawlScripts fetches the scripts referenced by an HTML page, scans each
 // bundle and emits the endpoints it references.
-func crawlScripts(ctx context.Context, client *fetch.Client, engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, findings *atomic.Int64, verifySem chan struct{}, scheme, rootScheme, host string, html []byte, maxScripts int, decode bool, buckets, repos *sync.Map) {
+func crawlScripts(ctx context.Context, client *fetch.Client, engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, findings *atomic.Int64, verifySem chan struct{}, scheme, rootScheme, host string, html []byte, maxScripts int, decode bool, buckets, repos, tokens *sync.Map) {
 	if rootScheme == "" {
 		rootScheme = scheme
 	}
@@ -477,7 +492,7 @@ func crawlScripts(ctx context.Context, client *fetch.Client, engine *patterns.En
 		if err != nil || code == 0 || len(body) == 0 {
 			continue
 		}
-		scanMassBody(engine, dedup, w, false, u.Host, u.Path, body, findings, buckets, repos, verifySem, decode)
+		scanMassBody(engine, dedup, w, false, u.Host, u.Path, body, findings, buckets, repos, tokens, verifySem, decode)
 		for _, ep := range jscracker.Endpoints(body) {
 			emitSimple(dedup, w, findings, "js-endpoint", "Endpoint referenced in JS", ep, u.Host, u.Path, []string{"js"})
 		}
@@ -559,6 +574,8 @@ func followGitRepos(ctx context.Context, out io.Writer, repos *sync.Map, cfg *co
 	lim := cfg.ScanLimits
 	cloner := gitdump.New(gcfg, lim)
 
+	rs := &repoScanner{cloner: cloner, engine: engine, dedup: dedup, w: w, findings: findings, verifySem: verifySem, decode: decode, out: out}
+
 	for _, j := range jobs {
 		var candidates []string
 		if strings.HasPrefix(j.remote, "http") {
@@ -566,49 +583,165 @@ func followGitRepos(ctx context.Context, out io.Writer, repos *sync.Map, cfg *co
 		}
 		candidates = append(candidates, "https://"+j.host+"/.git", "http://"+j.host+"/.git")
 
-		var lastErr error
-		cloned := false
-		for _, cloneURL := range candidates {
-			cctx, cancel := context.WithTimeout(ctx, 180*time.Second)
-			files := 0
-			target := model.Target{
-				Kind:    model.KindGitRepo,
-				Value:   cloneURL,
-				Token:   token,
-				GitHost: gitdump.HostFromURL(cloneURL),
-			}
-			err := cloner.Dump(cctx, target, func(t model.Target, c gitdump.Content) {
-				files++
-				scanMassBody(engine, dedup, w, false, cloneURL, c.File, c.Bytes, findings, nil, nil, verifySem, decode)
+		if rs.scanURL(ctx, j.host, candidates, "https://"+j.host+"/.git", token) {
+			continue
+		}
+	}
+}
+
+// repoScanner holds the shared state used to clone/scan a repository.
+type repoScanner struct {
+	cloner    *gitdump.Cloner
+	engine    *patterns.Engine
+	dedup     *output.ShardedDedup
+	w         *output.AsyncWriter
+	findings  *atomic.Int64
+	verifySem chan struct{}
+	decode    bool
+	out       io.Writer
+}
+
+// scanURL tries the candidate clone URLs in order, then the dumb protocol.
+// It returns true when the repository was scanned by some means.
+func (rs *repoScanner) scanURL(ctx context.Context, host string, candidates []string, dumbBase, token string) bool {
+	var lastErr error
+	for _, cloneURL := range candidates {
+		cctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+		files := 0
+		target := model.Target{
+			Kind:    model.KindGitRepo,
+			Value:   cloneURL,
+			Token:   token,
+			GitHost: gitdump.HostFromURL(cloneURL),
+		}
+		err := rs.cloner.Dump(cctx, target, func(t model.Target, c gitdump.Content) {
+			files++
+			scanMassBody(rs.engine, rs.dedup, rs.w, false, cloneURL, c.File, c.Bytes, rs.findings, nil, nil, nil, rs.verifySem, rs.decode)
+		})
+		cancel()
+		if err == nil {
+			rs.emit("git-repo", "Cloned exposed repository", cloneURL, host, "/", []string{"git"})
+			fmt.Fprintf(rs.out, "  [git] %s cloned, %d blob(s) scanned\n", cloneURL, files)
+			return true
+		}
+		lastErr = err
+	}
+	// dumb-protocol fallback
+	if dumbBase != "" {
+		items := 0
+		err := gitdump.DumbScan(ctx, dumbBase, nil, gitdump.DefaultDumbOptions(),
+			model.Target{Kind: model.KindGitRepo, Value: dumbBase},
+			func(t model.Target, c gitdump.Content) {
+				items++
+				scanMassBody(rs.engine, rs.dedup, rs.w, false, dumbBase, c.File, c.Bytes, rs.findings, nil, nil, nil, rs.verifySem, rs.decode)
 			})
-			cancel()
-			if err == nil {
-				cloned = true
-				emitSimple(dedup, w, findings, "git-repo", "Cloned exposed repository", cloneURL, j.host, "/", []string{"git"})
-				fmt.Fprintf(out, "  [git] %s cloned, %d blob(s) scanned\n", cloneURL, files)
-				break
-			}
-			lastErr = err
+		if err == nil && items > 0 {
+			rs.emit("git-dumb-scan", "Scanned exposed .git (dumb protocol)", dumbBase, host, "/", []string{"git"})
+			fmt.Fprintf(rs.out, "  [git] %s -> dumb scan, %d item(s)\n", host, items)
+			return true
 		}
-		if !cloned {
-			// dumb-protocol fallback: read the .git directory over HTTP
-			base := "https://" + j.host + "/.git"
-			items := 0
-			err := gitdump.DumbScan(ctx, base, nil, gitdump.DefaultDumbOptions(),
-				model.Target{Kind: model.KindGitRepo, Value: base},
-				func(t model.Target, c gitdump.Content) {
-					items++
-					scanMassBody(engine, dedup, w, false, base, c.File, c.Bytes, findings, nil, nil, verifySem, decode)
-				})
-			if err == nil && items > 0 {
-				cloned = true
-				emitSimple(dedup, w, findings, "git-dumb-scan", "Scanned exposed .git (dumb protocol)", base, j.host, "/", []string{"git"})
-				fmt.Fprintf(out, "  [git] %s -> dumb scan, %d item(s)\n", j.host, items)
+	}
+	rs.emit("git-clone-failed", "Repository could not be read", host, host, "/", []string{"git"})
+	fmt.Fprintf(rs.out, "  [git] %s -> %v\n", host, lastErr)
+	return false
+}
+
+func (rs *repoScanner) emit(ruleID, desc, secret, host, path string, tags []string) {
+	emitSimple(rs.dedup, rs.w, rs.findings, ruleID, desc, secret, host, path, tags)
+}
+
+// isTokenRule reports whether a rule yields a forge credential.
+func isTokenRule(id string) bool {
+	switch id {
+	case "github-oauth", "github-pat", "github-fine-grained-pat", "github-basic-cred",
+		"gitlab-pat", "gitlab-oauth", "gitlab-deploy-token", "gitlab-runner-token",
+		"gitlab-scim-token", "gitlab-ci-token",
+		"gitea-token", "bitbucket-app-password":
+		return true
+	}
+	return false
+}
+
+// normalizeToken decodes a base64 "x-access-token:<token>" credential.
+func normalizeToken(t string) string {
+	if strings.HasPrefix(t, "eC1h") {
+		if dec, err := base64.StdEncoding.DecodeString(t); err == nil {
+			if _, rest, ok := strings.Cut(string(dec), ":"); ok {
+				return rest
 			}
 		}
-		if !cloned {
-			emitSimple(dedup, w, findings, "git-clone-failed", "Exposed .git could not be cloned", j.host, j.host, "/", []string{"git"})
-			fmt.Fprintf(out, "  [git] %s -> %v\n", j.host, lastErr)
+	}
+	return t
+}
+
+// followForge expands the account behind a discovered remote, using a leaked
+// token when available, and optionally clones what it lists.
+func followForgeAccount(ctx context.Context, out io.Writer, repos, tokens *sync.Map, cfg *config.Config, engine *patterns.Engine, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64, verifySem chan struct{}, decode bool, forgeMax int, fallbackToken string) {
+	type lead struct{ host, remote, token string }
+	var leads []lead
+	repos.Range(func(k, v any) bool {
+		host, _ := k.(string)
+		remote, _ := v.(string)
+		if remote == "" {
+			return true
+		}
+		tok := ""
+		if t, ok := tokens.Load(host); ok {
+			tok, _ = t.(string)
+		}
+		leads = append(leads, lead{host: host, remote: remote, token: normalizeToken(tok)})
+		return true
+	})
+	if len(leads) == 0 {
+		return
+	}
+	sort.Slice(leads, func(i, j int) bool { return leads[i].host < leads[j].host })
+
+	gcfg := cfg.GitScanner
+	gcfg.ScanHistory = false
+	rs := &repoScanner{
+		cloner:    gitdump.New(gcfg, cfg.ScanLimits),
+		engine:    engine,
+		dedup:     dedup,
+		w:         w,
+		findings:  findings,
+		verifySem: verifySem,
+		decode:    decode,
+		out:       out,
+	}
+
+	fmt.Fprintf(out, "\n[forge] expanding %d remote(s)...\n", len(leads))
+	for _, l := range leads {
+		forge, base, owner, ok := dumper.ParseRemote(l.remote)
+		if !ok {
+			continue
+		}
+		token := l.token
+		if token == "" {
+			token = fallbackToken
+		}
+		cl := dumper.New(forge, base, token)
+		listed, err := cl.ListOwner(ctx, owner)
+		if err != nil {
+			fmt.Fprintf(out, "  [forge] %s/%s -> %v\n", forge, owner, err)
+			continue
+		}
+		src := string(forge) + ":" + owner
+		withToken := ""
+		if token != "" {
+			withToken = " (token)"
+		}
+		rs.emit("forge-account", "Forge account reachable"+withToken, src, l.host, "/", []string{"forge"})
+		fmt.Fprintf(out, "  [forge] %s/%s -> %d repo(s)%s\n", forge, owner, len(listed), withToken)
+
+		for i, r := range listed {
+			if r.CloneURL == "" {
+				continue
+			}
+			rs.emit("forge-repo", "Repository of the forge account", r.CloneURL, l.host, "/", []string{"forge"})
+			if forgeMax > 0 && i < forgeMax {
+				rs.scanURL(ctx, r.FullName, []string{r.CloneURL}, "", token)
+			}
 		}
 	}
 }
@@ -662,7 +795,7 @@ func triageBuckets(ctx context.Context, out io.Writer, buckets *sync.Map, engine
 				continue
 			}
 			scanned++
-			scanMassBody(engine, dedup, w, false, "s3://"+r.Name, "/"+k, body, findings, nil, nil, verifySem, decode)
+			scanMassBody(engine, dedup, w, false, "s3://"+r.Name, "/"+k, body, findings, nil, nil, nil, verifySem, decode)
 		}
 		fmt.Fprintf(out, "           scanned %d object(s)\n", scanned)
 	}

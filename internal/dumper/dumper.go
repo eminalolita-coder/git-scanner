@@ -88,6 +88,194 @@ func New(forge Forge, base, token string) *Client {
 	}
 }
 
+// getWithFallback performs a GET, retrying without credentials when an
+// authenticated call fails (e.g. an expired leaked token).
+func (c *Client) getWithFallback(ctx context.Context, url string, hdr map[string]string, out any) error {
+	err := c.get(ctx, url, hdr, out)
+	if err == nil {
+		return nil
+	}
+	_, hasAuth := hdr["Authorization"]
+	_, hasPT := hdr["PRIVATE-TOKEN"]
+	if hasAuth || hasPT {
+		return c.get(ctx, url, nil, out)
+	}
+	return err
+}
+
+// ParseRemote extracts the forge, base URL and owner from a git remote URL.
+// It accepts https://host/owner/repo(.git) and git@host:owner/repo forms.
+func ParseRemote(remote string) (Forge, string, string, bool) {
+	u := strings.TrimSpace(strings.TrimSuffix(remote, ".git"))
+	if u == "" {
+		return "", "", "", false
+	}
+	if strings.HasPrefix(u, "git@") {
+		rest := strings.TrimPrefix(u, "git@")
+		host, path, ok := strings.Cut(rest, ":")
+		if !ok {
+			return "", "", "", false
+		}
+		return forgeBaseOwner(host, path)
+	}
+	if i := strings.Index(u, "://"); i >= 0 {
+		u = u[i+3:]
+	}
+	if at := strings.IndexByte(u, '@'); at >= 0 && at < strings.IndexByte(u, '/') {
+		u = u[at+1:]
+	}
+	host, path, _ := strings.Cut(u, "/")
+	return forgeBaseOwner(host, path)
+}
+
+func forgeBaseOwner(host, path string) (Forge, string, string, bool) {
+	f := ForgeFromHost(host)
+	if f == "" {
+		return "", "", "", false
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 1 || parts[0] == "" {
+		return "", "", "", false
+	}
+	base := "https://" + host
+	if f == AzureDevOps && !strings.Contains(host, "dev.azure.com") {
+		base = "https://" + host
+	}
+	return f, base, parts[0], true
+}
+
+// ListOwner lists an owner's repositories. It uses the token when present
+// (private repos included) and falls back to the public owner endpoint.
+func (c *Client) ListOwner(ctx context.Context, owner string) ([]Repo, error) {
+	if owner == "" {
+		return nil, fmt.Errorf("empty owner")
+	}
+	if c.Token != "" {
+		if repos, err := c.List(ctx); err == nil && len(repos) > 0 {
+			return repos, nil
+		}
+	}
+	switch c.Forge {
+	case GitHub:
+		return c.listGitHubOwner(ctx, owner)
+	case GitLab:
+		return c.listGitLabOwner(ctx, owner)
+	case Gitea, Gogs:
+		return c.listGiteaOwner(ctx, owner)
+	case Bitbucket:
+		return c.listBitbucket(ctx)
+	default:
+		return nil, fmt.Errorf("unsupported forge %s", c.Forge)
+	}
+}
+
+func (c *Client) listGitHubOwner(ctx context.Context, owner string) ([]Repo, error) {
+	api := c.BaseURL
+	if strings.Contains(api, "github.com") || api == "" {
+		api = "https://api.github.com"
+	} else {
+		api += "/api/v3"
+	}
+	hdr := map[string]string{}
+	if c.Token != "" {
+		hdr["Authorization"] = "token " + c.Token
+	}
+	var out []Repo
+	for page := 1; page <= c.max/100; page++ {
+		var batch []struct {
+			FullName string `json:"full_name"`
+			CloneURL string `json:"clone_url"`
+			Private  bool   `json:"private"`
+			Name     string `json:"name"`
+		}
+		url := fmt.Sprintf("%s/users/%s/repos?per_page=100&page=%d", api, owner, page)
+		if err := c.getWithFallback(ctx, url, hdr, &batch); err != nil {
+			return out, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, r := range batch {
+			out = append(out, Repo{Name: r.Name, FullName: r.FullName, CloneURL: r.CloneURL, Private: r.Private, Forge: GitHub})
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) listGitLabOwner(ctx context.Context, owner string) ([]Repo, error) {
+	api := strings.TrimRight(c.BaseURL, "/") + "/api/v4"
+	hdr := map[string]string{}
+	if c.Token != "" {
+		hdr["PRIVATE-TOKEN"] = c.Token
+	}
+	var out []Repo
+	for page := 1; page <= c.max/100; page++ {
+		var batch []struct {
+			PathWithNS string `json:"path_with_namespace"`
+			HTTPURL    string `json:"http_url_to_repo"`
+			Visibility string `json:"visibility"`
+			Name       string `json:"name"`
+		}
+		url := fmt.Sprintf("%s/users/%s/projects?per_page=100&page=%d", api, owner, page)
+		if err := c.getWithFallback(ctx, url, hdr, &batch); err != nil {
+			// groups fallback
+			var gb []struct {
+				PathWithNS string `json:"path_with_namespace"`
+				HTTPURL    string `json:"http_url_to_repo"`
+				Name       string `json:"name"`
+			}
+			gurl := fmt.Sprintf("%s/groups/%s/projects?per_page=100&page=%d", api, owner, page)
+			if gerr := c.get(ctx, gurl, hdr, &gb); gerr != nil {
+				return out, err
+			}
+			for _, r := range gb {
+				out = append(out, Repo{Name: r.Name, FullName: r.PathWithNS, CloneURL: r.HTTPURL, Forge: GitLab})
+			}
+			continue
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, r := range batch {
+			out = append(out, Repo{Name: r.Name, FullName: r.PathWithNS, CloneURL: r.HTTPURL, Private: r.Visibility != "public", Forge: GitLab})
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) listGiteaOwner(ctx context.Context, owner string) ([]Repo, error) {
+	api := strings.TrimRight(c.BaseURL, "/") + "/api/v1"
+	hdr := map[string]string{}
+	if c.Token != "" {
+		hdr["Authorization"] = "token " + c.Token
+	}
+	var out []Repo
+	for page := 1; page <= c.max/50; page++ {
+		var batch []struct {
+			FullName string `json:"full_name"`
+			CloneURL string `json:"clone_url"`
+			HTMLURL  string `json:"html_url"`
+			Private  bool   `json:"private"`
+			Name     string `json:"name"`
+		}
+		url := fmt.Sprintf("%s/users/%s/repos?limit=50&page=%d", api, owner, page)
+		if err := c.getWithFallback(ctx, url, hdr, &batch); err != nil {
+			return out, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, r := range batch {
+			clone := r.CloneURL
+			if clone == "" {
+				clone = r.HTMLURL + ".git"
+			}
+			out = append(out, Repo{Name: r.Name, FullName: r.FullName, CloneURL: clone, Private: r.Private, Forge: c.Forge})
+		}
+	}
+	return out, nil
+}
+
 // List enumerates up to max repositories.
 func (c *Client) List(ctx context.Context) ([]Repo, error) {
 	switch c.Forge {
@@ -174,7 +362,7 @@ func (c *Client) listGitHub(ctx context.Context) ([]Repo, error) {
 			Name     string `json:"name"`
 		}
 		url := fmt.Sprintf("%s/user/repos?per_page=100&page=%d&affiliation=owner,collaborator,organization_member", api, page)
-		if err := c.get(ctx, url, hdr, &batch); err != nil {
+		if err := c.getWithFallback(ctx, url, hdr, &batch); err != nil {
 			return out, err
 		}
 		if len(batch) == 0 {
@@ -199,7 +387,7 @@ func (c *Client) listGitLab(ctx context.Context) ([]Repo, error) {
 			Name       string `json:"name"`
 		}
 		url := fmt.Sprintf("%s/projects?membership=true&per_page=100&page=%d", api, page)
-		if err := c.get(ctx, url, hdr, &batch); err != nil {
+		if err := c.getWithFallback(ctx, url, hdr, &batch); err != nil {
 			return out, err
 		}
 		if len(batch) == 0 {
@@ -225,7 +413,7 @@ func (c *Client) listGitea(ctx context.Context) ([]Repo, error) {
 			Name     string `json:"name"`
 		}
 		url := fmt.Sprintf("%s/user/repos?limit=50&page=%d", api, page)
-		if err := c.get(ctx, url, hdr, &batch); err != nil {
+		if err := c.getWithFallback(ctx, url, hdr, &batch); err != nil {
 			return out, err
 		}
 		if len(batch) == 0 {
