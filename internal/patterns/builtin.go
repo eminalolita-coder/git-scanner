@@ -31,9 +31,14 @@ func humanRules() []Pattern {
 			Keywords: []string{"ghp_"}, Tags: []string{"github"},
 		},
 		{
-			ID: "github-oauth", Description: "GitHub OAuth / app token",
-			Regex:    `\b(gh[ousr]_[A-Za-z0-9]{36,255})\b`,
+			ID: "github-oauth", Description: "GitHub OAuth / app / installation token",
+			Regex:    `\b(gh[ousr]_[A-Za-z0-9]{20,255})\b`,
 			Keywords: []string{"gho_", "ghu_", "ghs_", "ghr_"}, Tags: []string{"github"},
+		},
+		{
+			ID: "github-basic-cred", Description: "Base64 x-access-token credential",
+			Regex:       `\b(eC1hY2Nlc3MtdG9rZW46[A-Za-z0-9+/=]{12,})\b`,
+			SecretGroup: 1, Keywords: []string{"ec1hy2nlc3mtdg9rzw46"}, Tags: []string{"github"},
 		},
 		{
 			ID: "github-fine-grained-pat", Description: "GitHub Fine-Grained PAT",

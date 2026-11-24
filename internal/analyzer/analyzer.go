@@ -25,9 +25,9 @@ func DefaultOptions() Options {
 }
 
 var (
-	reBase64 = regexp.MustCompile(`\b[A-Za-z0-9+/]{20,}={0,2}\b`)
-	reHex    = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
-	rePctEnc = regexp.MustCompile(`%[0-9a-fA-F]{2}`)
+	reBase64Run = regexp.MustCompile(`[A-Za-z0-9+/\-_]{16,}={0,2}`)
+	reHex       = regexp.MustCompile(`\b[0-9a-fA-F]{32,}\b`)
+	rePctEnc    = regexp.MustCompile(`%[0-9a-fA-F]{2}`)
 )
 
 // IsBinary reports whether content looks non-textual.
@@ -37,6 +37,45 @@ func IsBinary(content []byte) bool {
 		probe = probe[:512]
 	}
 	return bytes.IndexByte(probe, 0) >= 0
+}
+
+func mostlyText(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	printable := 0
+	for _, c := range b {
+		if (c >= 32 && c < 127) || c == '\n' || c == '\r' || c == '\t' {
+			printable++
+		}
+	}
+	return float64(printable)/float64(len(b)) >= 0.9
+}
+
+// tryBase64 attempts to decode a base64 run, trying shifted offsets and both
+// standard and URL alphabets. This handles runs polluted by surrounding URL
+// characters (e.g. "https://" leaving leading slashes).
+func tryBase64(run string) []byte {
+	encs := []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding}
+	for start := 0; start < 4 && start < len(run)-15; start++ {
+		s := run[start:]
+		for trim := 0; trim < 4; trim++ {
+			n := len(s) - trim
+			if n < 16 {
+				break
+			}
+			cand := s[:n]
+			if len(cand)%4 != 0 {
+				continue
+			}
+			for _, enc := range encs {
+				if dec, err := enc.DecodeString(cand); err == nil && len(dec) >= 8 && mostlyText(dec) {
+					return dec
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ExtractStrings returns printable ASCII runs of at least minLen, joined by
@@ -83,11 +122,11 @@ func Deobfuscate(content []byte, o Options) [][]byte {
 	}
 
 	// base64 candidates
-	for i, m := range reBase64.FindAll(content, o.MaxBase64Candidates) {
+	for i, run := range reBase64Run.FindAll(content, o.MaxBase64Candidates) {
 		if i >= o.MaxBase64Candidates {
 			break
 		}
-		if dec, err := base64.StdEncoding.DecodeString(string(m)); err == nil && len(dec) >= 8 {
+		if dec := tryBase64(string(run)); dec != nil {
 			add(dec)
 		}
 	}

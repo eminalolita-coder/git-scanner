@@ -106,7 +106,12 @@ func extractedRules() []Pattern {
 		{
 			ID: "s3-bucket-host", Description: "S3 bucket hostname",
 			Regex:       `(?:https?://)?([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])\.s3(?:[.\-][a-z0-9\-]+)*\.amazonaws\.com`,
-			SecretGroup: 1, Keywords: []string{".s3", "amazonaws"}, Tags: []string{"s3"},
+			SecretGroup: 1, Keywords: []string{".s3", "amazonaws"}, Tags: []string{"s3", "bucket"},
+		},
+		{
+			ID: "s3-path-style", Description: "S3 path-style bucket URL",
+			Regex:       `https?://s3(?:[.\-][a-z0-9-]+)*\.amazonaws\.com/([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])(?:/|["'?]|$)`,
+			SecretGroup: 1, Keywords: []string{"s3.", "s3-", "//s3"}, Tags: []string{"s3", "bucket"},
 		},
 
 		// ---- Messaging ----

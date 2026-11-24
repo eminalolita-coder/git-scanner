@@ -90,6 +90,22 @@ func AnalyzeURL(ctx context.Context, client *http.Client, pageURL string, o Opti
 	return res, nil
 }
 
+// ScriptsFromHTML extracts absolute script URLs from an HTML document,
+// resolving relative references against base.
+func ScriptsFromHTML(base *url.URL, html []byte) []string {
+	return unique(resolveAll(base, reScript.FindAllStringSubmatch(string(html), -1)))
+}
+
+// IsHTML reports whether a body looks like an HTML document.
+func IsHTML(body []byte) bool {
+	probe := body
+	if len(probe) > 2048 {
+		probe = probe[:2048]
+	}
+	s := strings.ToLower(string(probe))
+	return strings.Contains(s, "<html") || strings.Contains(s, "<script") || strings.Contains(s, "<!doctype")
+}
+
 func harvest(res *Result, js []byte) {
 	res.Endpoints = append(res.Endpoints, Endpoints(js)...)
 	res.Paths = append(res.Paths, Paths(js)...)

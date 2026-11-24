@@ -139,12 +139,22 @@ func mustExpand(args []string) []model.Target {
 }
 
 func normalizeBucket(s string) string {
-	s = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "https://"), "http://")
-	s = strings.TrimSuffix(s, "/")
-	if i := strings.IndexAny(s, "./"); i > 0 {
-		return s[:i]
+	s = strings.TrimSpace(s)
+	host := s
+	if i := strings.Index(s, "://"); i >= 0 {
+		host = s[i+3:]
 	}
-	return s
+	host = strings.TrimSuffix(host, "/")
+	if i := strings.IndexByte(host, '/'); i > 0 {
+		host = host[:i]
+	}
+	// only strip the leading label when the input is an S3 endpoint
+	if strings.Contains(host, "amazonaws.com") || strings.Contains(host, ".s3.") || strings.HasSuffix(host, ".s3") {
+		if i := strings.IndexByte(host, '.'); i > 0 {
+			return host[:i]
+		}
+	}
+	return host
 }
 
 func firstN(s []string, n int) []string {

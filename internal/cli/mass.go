@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -16,9 +18,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eminalolita-coder/git-scanner/internal/analyzer"
 	"github.com/eminalolita-coder/git-scanner/internal/aws"
 	"github.com/eminalolita-coder/git-scanner/internal/checkers"
 	"github.com/eminalolita-coder/git-scanner/internal/fetch"
+	"github.com/eminalolita-coder/git-scanner/internal/jscracker"
 	"github.com/eminalolita-coder/git-scanner/internal/model"
 	"github.com/eminalolita-coder/git-scanner/internal/output"
 	"github.com/eminalolita-coder/git-scanner/internal/patterns"
@@ -31,25 +35,29 @@ type massEntry struct {
 
 func newMassCmd(opts *Options) *cobra.Command {
 	var (
-		concurrency  int
-		timeoutSec   int
-		pathsFlag    string
-		scheme       string
-		resolvers    string
-		outputDir    string
-		format       string
-		maxBodyKB    int
-		rate         int
-		verify       bool
-		resolveOnly  bool
-		maxPerPat    int
-		progressSec  int
-		profile      string
-		gogc         int
-		memLimitMB   int
-		method       string
-		keepAlive    bool
-		checkBuckets bool
+		concurrency   int
+		timeoutSec    int
+		pathsFlag     string
+		scheme        string
+		resolvers     string
+		outputDir     string
+		format        string
+		maxBodyKB     int
+		rate          int
+		verify        bool
+		resolveOnly   bool
+		maxPerPat     int
+		progressSec   int
+		profile       string
+		gogc          int
+		memLimitMB    int
+		method        string
+		keepAlive     bool
+		checkBuckets  bool
+		crawlJS       bool
+		jsMax         int
+		decode        bool
+		bucketObjects int
 	)
 
 	cmd := &cobra.Command{
@@ -199,14 +207,21 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 						if limiter != nil {
 							limiter.wait(ctx)
 						}
+						var rootBody []byte
+						var rootScheme string
 						for _, p := range paths {
 							requests.Add(1)
 							sch, code, body, err := fetchOne(ctx, client, scheme, e.host, p)
-							_ = sch
 							if err != nil || code == 0 || len(body) == 0 {
 								continue
 							}
-							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings, bucketSet, verifySem)
+							if p == "/" {
+								rootBody, rootScheme = body, sch
+							}
+							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings, bucketSet, verifySem, decode)
+						}
+						if crawlJS && len(rootBody) > 0 && jscracker.IsHTML(rootBody) {
+							crawlScripts(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, rootBody, jsMax, decode, bucketSet)
 						}
 						done.Add(1)
 					}
@@ -230,7 +245,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			close(stop)
 
 			if checkBuckets && bucketCount(bucketSet) > 0 {
-				triageBuckets(ctx, out, bucketSet, async, dedup, &findings)
+				triageBuckets(ctx, out, bucketSet, engine, async, dedup, &findings, verifySem, decode, bucketObjects)
 			}
 
 			el := time.Since(start).Seconds()
@@ -254,14 +269,18 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVar(&rate, "rate", 0, "max requests/second (0 = unlimited)")
 	f.BoolVar(&verify, "verify", false, "verify findings against provider APIs")
 	f.BoolVar(&resolveOnly, "resolve-only", false, "only resolve hosts and print ip")
-	f.IntVar(&maxPerPat, "matches-per-pattern", 1, "max matches per pattern per body")
+	f.IntVar(&maxPerPat, "matches-per-pattern", 3, "max matches per pattern per body")
 	f.IntVar(&progressSec, "progress", 2, "progress interval (seconds)")
 	f.StringVar(&profile, "profile", "auto", "tuning profile: auto|small|vps|max")
 	f.IntVar(&gogc, "gogc", 0, "set GOGC (0 = untouched); profiles set 400-800")
 	f.IntVar(&memLimitMB, "memlimit", 0, "soft memory limit in MB (0 = untouched)")
 	f.StringVar(&method, "method", "get", "HTTP method: get|head (head = no body)")
 	f.BoolVar(&keepAlive, "keep-alive", false, "reuse connections (useful with multiple --paths)")
-	f.BoolVar(&checkBuckets, "check-buckets", false, "triage discovered S3 buckets for public access")
+	f.BoolVar(&checkBuckets, "check-buckets", false, "triage discovered S3 buckets and scan their objects")
+	f.BoolVar(&crawlJS, "crawl-js", false, "fetch page scripts and extract endpoints/keys in depth")
+	f.IntVar(&jsMax, "js-max", 5, "max scripts to fetch per page")
+	f.BoolVar(&decode, "decode", true, "also scan base64/hex/url-decoded content")
+	f.IntVar(&bucketObjects, "bucket-objects", 10, "objects to download per public bucket")
 	return cmd
 }
 
@@ -353,50 +372,112 @@ func fetchOne(ctx context.Context, c *fetch.Client, scheme, host, path string) (
 	return scheme, code, body, err
 }
 
-func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64, buckets *sync.Map, verifySem chan struct{}) {
-	for _, m := range engine.Scan(body) {
-		key := m.Pattern.ID + "\x00" + m.Secret + "\x00" + host + path
-		if !dedup.First(key) {
-			continue
-		}
-		if m.Pattern.ID == "s3-bucket-host" && buckets != nil {
-			buckets.Store(m.Secret, struct{}{})
-		}
-		f := model.Finding{
-			RuleID:      m.Pattern.ID,
-			Description: m.Pattern.Description,
-			Secret:      m.Secret,
-			Match:       m.Match,
-			Location:    model.Location{Source: host, File: path, Line: 1},
-			Tags:        m.Pattern.Tags,
-			Detected:    time.Now().UTC(),
-		}
-		if strings.HasPrefix(f.RuleID, "aws-access-key") {
-			if sec := pairedAWSSecret(body, f.Secret); sec != "" {
-				f.Extra = map[string]string{"secret": sec, "account_hint": "pair from same body"}
+func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64, buckets *sync.Map, verifySem chan struct{}, decode bool) {
+	blobs := [][]byte{body}
+	if decode && len(body) < 4<<20 {
+		blobs = append(blobs, analyzer.Deobfuscate(body, analyzer.DefaultOptions())...)
+	}
+	for _, blob := range blobs {
+		for _, m := range engine.Scan(blob) {
+			key := m.Pattern.ID + "\x00" + m.Secret + "\x00" + host + path
+			if !dedup.First(key) {
+				continue
 			}
-		}
-		if verify {
-			if cs := checkers.For(f.RuleID, f.Tags); len(cs) > 0 {
-				verifySem <- struct{}{}
-				rctx, cancel := context.WithTimeout(context.Background(), checkers.DefaultTimeout)
-				res := cs[0].Check(rctx, f.Secret, f.Extra)
-				cancel()
-				<-verifySem
-				f.Verified = res.Verified
-				f.Checker = cs[0].Name()
-				if res.Err != "" {
-					ensureExtra(&f)["check_error"] = res.Err
-				}
-				if res.Identity != "" {
-					ensureExtra(&f)["identity"] = res.Identity
+			if (m.Pattern.ID == "s3-bucket-host" || m.Pattern.ID == "s3-path-style") && buckets != nil {
+				buckets.Store(m.Secret, struct{}{})
+			}
+			f := model.Finding{
+				RuleID:      m.Pattern.ID,
+				Description: m.Pattern.Description,
+				Secret:      m.Secret,
+				Match:       m.Match,
+				Location:    model.Location{Source: host, File: path, Line: 1},
+				Tags:        m.Pattern.Tags,
+				Detected:    time.Now().UTC(),
+			}
+			if strings.HasPrefix(f.RuleID, "aws-access-key") {
+				if sec := pairedAWSSecret(body, f.Secret); sec != "" {
+					f.Extra = map[string]string{"secret": sec, "account_hint": "pair from same body"}
 				}
 			}
+			if verify {
+				if cs := checkers.For(f.RuleID, f.Tags); len(cs) > 0 {
+					verifySem <- struct{}{}
+					rctx, cancel := context.WithTimeout(context.Background(), checkers.DefaultTimeout)
+					res := cs[0].Check(rctx, f.Secret, f.Extra)
+					cancel()
+					<-verifySem
+					f.Verified = res.Verified
+					f.Checker = cs[0].Name()
+					if res.Err != "" {
+						ensureExtra(&f)["check_error"] = res.Err
+					}
+					if res.Identity != "" {
+						ensureExtra(&f)["identity"] = res.Identity
+					}
+				}
+			}
+			findings.Add(1)
+			_ = w.Write(f)
 		}
-		findings.Add(1)
-		_ = w.Write(f)
 	}
 }
+
+// crawlScripts fetches the scripts referenced by an HTML page, scans each
+// bundle and emits the endpoints it references.
+func crawlScripts(ctx context.Context, client *fetch.Client, engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, findings *atomic.Int64, verifySem chan struct{}, scheme, rootScheme, host string, html []byte, maxScripts int, decode bool, buckets *sync.Map) {
+	if rootScheme == "" {
+		rootScheme = scheme
+	}
+	if rootScheme == "auto" {
+		rootScheme = "https"
+	}
+	base, err := url.Parse(rootScheme + "://" + host + "/")
+	if err != nil {
+		return
+	}
+	scripts := jscracker.ScriptsFromHTML(base, html)
+	if len(scripts) > maxScripts {
+		scripts = scripts[:maxScripts]
+	}
+	seen := map[string]bool{}
+	for _, s := range scripts {
+		u, err := url.Parse(s)
+		if err != nil || seen[u.Host+u.Path] {
+			continue
+		}
+		seen[u.Host+u.Path] = true
+		requestsAdd(1)
+		code, body, err := client.Fetch(ctx, u.Scheme, u.Host, u.Path)
+		if err != nil || code == 0 || len(body) == 0 {
+			continue
+		}
+		scanMassBody(engine, dedup, w, false, u.Host, u.Path, body, findings, buckets, verifySem, decode)
+		for _, ep := range jscracker.Endpoints(body) {
+			emitSimple(dedup, w, findings, "js-endpoint", "Endpoint referenced in JS", ep, u.Host, u.Path, []string{"js"})
+		}
+		for _, pm := range jscracker.SourceMaps(body) {
+			emitSimple(dedup, w, findings, "js-sourcemap", "JS source map reference", pm, u.Host, u.Path, []string{"js"})
+		}
+	}
+}
+
+func emitSimple(dedup *output.ShardedDedup, w *output.AsyncWriter, findings *atomic.Int64, ruleID, desc, secret, host, path string, tags []string) {
+	key := ruleID + "\x00" + secret + "\x00" + host + path
+	if !dedup.First(key) {
+		return
+	}
+	findings.Add(1)
+	_ = w.Write(model.Finding{
+		RuleID: ruleID, Description: desc, Secret: secret,
+		Location: model.Location{Source: host, File: path, Line: 1},
+		Tags:     tags, Detected: time.Now().UTC(),
+	})
+}
+
+var crawlReqCounter atomic.Int64
+
+func requestsAdd(n int64) { crawlReqCounter.Add(n) }
 
 // pairedAWSSecret returns the most plausible 40-char secret key in body that
 // is not the access key itself.
@@ -429,9 +510,9 @@ func bucketCount(m *sync.Map) int {
 	return n
 }
 
-// triageBuckets probes discovered buckets for anonymous listing and emits a
-// finding for each public one.
-func triageBuckets(ctx context.Context, out io.Writer, buckets *sync.Map, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64) {
+// triageBuckets probes discovered buckets for anonymous listing, emits a
+// finding for each public one and scans a sample of their objects.
+func triageBuckets(ctx context.Context, out io.Writer, buckets *sync.Map, engine *patterns.Engine, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64, verifySem chan struct{}, decode bool, maxObjects int) {
 	names := bucketNames(buckets)
 	fmt.Fprintf(out, "\n[buckets] triaging %d discovered bucket(s)...\n", len(names))
 	res := aws.ScanPublicBuckets(ctx, nil, names, 64)
@@ -442,21 +523,46 @@ func triageBuckets(ctx context.Context, out io.Writer, buckets *sync.Map, w *out
 		}
 		public++
 		fmt.Fprintf(out, "  [PUBLIC] %s region=%s objects=%d+ sample=%v\n", r.Name, r.Region, r.ObjectCount, r.Sample)
-		if !dedup.First("s3-public-bucket\x00" + r.Name) {
+		emitSimple(dedup, w, findings, "s3-public-bucket", "Publicly listable S3 bucket",
+			r.Name, r.Name, "/", []string{"s3", "aws"})
+
+		if maxObjects <= 0 {
 			continue
 		}
-		findings.Add(1)
-		_ = w.Write(model.Finding{
-			RuleID:      "s3-public-bucket",
-			Description: "Publicly listable S3 bucket",
-			Secret:      r.Name,
-			Location:    model.Location{Source: r.Name, File: "/"},
-			Tags:        []string{"s3", "aws"},
-			Detected:    time.Now().UTC(),
-			Extra:       map[string]string{"region": r.Region, "objects": fmt.Sprintf("%d", r.ObjectCount)},
-		})
+		keys := r.Sample
+		if len(keys) > maxObjects {
+			keys = keys[:maxObjects]
+		}
+		scanned := 0
+		for _, k := range keys {
+			u := aws.PublicObjectURL(r.Name, r.Region, k)
+			code, body := httpGet(ctx, u, 1<<20)
+			if code != 200 || len(body) == 0 {
+				continue
+			}
+			scanned++
+			scanMassBody(engine, dedup, w, false, "s3://"+r.Name, "/"+k, body, findings, nil, verifySem, decode)
+		}
+		fmt.Fprintf(out, "           scanned %d object(s)\n", scanned)
 	}
 	fmt.Fprintf(out, "[buckets] %d public / %d checked\n", public, len(res))
+}
+
+var bucketHTTP = &http.Client{Timeout: 20 * time.Second}
+
+func httpGet(ctx context.Context, url string, limit int64) (int, []byte) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil
+	}
+	req.Header.Set("User-Agent", "git-scanner")
+	resp, err := bucketHTTP.Do(req)
+	if err != nil {
+		return 0, nil
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, limit))
+	return resp.StatusCode, body
 }
 
 func loadMassEntries(args []string) ([]massEntry, error) {

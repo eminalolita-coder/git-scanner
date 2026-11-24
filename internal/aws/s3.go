@@ -22,6 +22,25 @@ type BucketAccess struct {
 	Err         string   `json:"error,omitempty"`
 }
 
+// isDotted reports whether a bucket name contains dots, in which case the
+// virtual-host form does not match the S3 wildcard certificate.
+func isDotted(bucket string) bool { return strings.Contains(bucket, ".") }
+
+// bucketBase returns the base URL for a bucket, using path-style addressing for
+// dotted names (TLS wildcard + DNS constraints).
+func bucketBase(bucket, region string) string {
+	if isDotted(bucket) {
+		if region == "" || region == "us-east-1" {
+			return "https://s3.amazonaws.com/" + bucket
+		}
+		return fmt.Sprintf("https://s3.%s.amazonaws.com/%s", region, bucket)
+	}
+	if region == "" || region == "us-east-1" {
+		return fmt.Sprintf("https://%s.s3.amazonaws.com", bucket)
+	}
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com", bucket, region)
+}
+
 // CheckBucket probes a bucket anonymously: it reports existence, region and
 // whether the object listing is public, plus a sample of keys.
 func CheckBucket(ctx context.Context, client *http.Client, name string, maxKeys int) BucketAccess {
@@ -37,9 +56,8 @@ func CheckBucket(ctx context.Context, client *http.Client, name string, maxKeys 
 	res.Exists = true
 	res.Region = region
 
-	endpoint := bucketEndpoint(name, region)
-	url := fmt.Sprintf("%s/?list-type=2&max-keys=%d", endpoint, maxKeys)
-	status, body, err := anonGet(ctx, client, url)
+	url := fmt.Sprintf("%s/?list-type=2&max-keys=%d", bucketBase(name, region), maxKeys)
+	status, body, err := anonGet(ctx, client, name, url)
 	if err != nil {
 		res.Err = err.Error()
 		return res
@@ -65,31 +83,24 @@ func CheckBucket(ctx context.Context, client *http.Client, name string, maxKeys 
 
 // PublicObjectURL returns the anonymous URL of an object.
 func PublicObjectURL(bucket, region, key string) string {
-	return bucketEndpoint(bucket, region) + "/" + key
+	return bucketBase(bucket, region) + "/" + key
 }
 
 // ObjectURL builds a URL for an object (region-aware).
 func ObjectURL(bucket, region, key string, pathStyle bool) string {
-	if pathStyle {
-		host := "s3.amazonaws.com"
-		if region != "" && region != "us-east-1" {
-			host = fmt.Sprintf("s3.%s.amazonaws.com", region)
-		}
-		return fmt.Sprintf("https://%s/%s/%s", host, bucket, key)
+	if pathStyle || isDotted(bucket) {
+		return PublicObjectURL(bucket, region, key)
 	}
-	return bucketEndpoint(bucket, region) + "/" + key
-}
-
-func bucketEndpoint(bucket, region string) string {
-	if region == "" || region == "us-east-1" {
-		return fmt.Sprintf("https://%s.s3.amazonaws.com", bucket)
-	}
-	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com", bucket, region)
+	return bucketBase(bucket, region) + "/" + key
 }
 
 // bucketRegion discovers a bucket's region via a HEAD request (anonymous).
 func bucketRegion(ctx context.Context, client *http.Client, name string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, fmt.Sprintf("https://%s.s3.amazonaws.com/", name), nil)
+	url := fmt.Sprintf("https://%s.s3.amazonaws.com/", name)
+	if isDotted(name) {
+		url = "https://s3.amazonaws.com/" + name
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -111,7 +122,7 @@ func bucketRegion(ctx context.Context, client *http.Client, name string) (string
 	}
 }
 
-func anonGet(ctx context.Context, client *http.Client, url string) (int, []byte, error) {
+func anonGet(ctx context.Context, client *http.Client, bucket, url string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, nil, err
@@ -123,10 +134,11 @@ func anonGet(ctx context.Context, client *http.Client, url string) (int, []byte,
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	// follow region redirect once
+	// follow a region redirect once
 	if resp.StatusCode == 301 {
 		if r := resp.Header.Get("x-amz-bucket-region"); r != "" {
-			req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, bucketEndpoint(firstLabel(url), r)+"/?list-type=2", nil)
+			req2, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+				bucketBase(bucket, r)+"/?list-type=2", nil)
 			if req2 != nil {
 				if resp2, err := do(client, req2); err == nil {
 					defer resp2.Body.Close()

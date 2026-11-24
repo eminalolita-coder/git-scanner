@@ -70,7 +70,7 @@ git-scanner check ghp_012345678901234567890123456789012345
 
 | command | purpose |
 |---------|---------|
-| `mass hosts.txt` | high-throughput scan of thousands of hosts per second (`--check-buckets` triages discovered S3 buckets) |
+| `mass hosts.txt` | high-throughput scan (`--crawl-js` follows bundles, `--check-buckets` triages and scans public S3 buckets) |
 | `discover hosts.txt` | find exposed `.git` directories (git-clone with `--scan`) |
 | `cve hosts.txt` | probe common misconfigurations / metadata leaks |
 | `envcrack hosts.txt` | fetch `.env`/config files and scan them |
@@ -80,6 +80,8 @@ git-scanner check ghp_012345678901234567890123456789012345
 | `s3 bucket…` | triage buckets for public access, `--scan` to scan their objects |
 
 ```sh
+git-scanner mass hosts.txt --paths "/,.git/HEAD,.git/config" --decode
+git-scanner mass hosts.txt --crawl-js --check-buckets --bucket-objects 5
 git-scanner discover hosts.txt --scan
 git-scanner js https://app.example.com
 git-scanner dump dev.azure.com --org myorg -T <pat> --scan
@@ -253,6 +255,8 @@ Core and recon features are implemented and tested:
 - [x] SOCKS proxy rotation for git cloning
 - [x] Lambda / ECS environment variable extraction
 - [x] High-throughput `mass` mode (pooled DNS, dial-by-IP, worker pool, async writer)
+- [x] JS crawl from a mass scan (bundles followed, base64/hex decoding, endpoints)
+- [x] Bucket → content chain (discovered S3 buckets triaged then their objects scanned)
 
 ## Development
 
