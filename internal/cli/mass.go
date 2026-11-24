@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/eminalolita-coder/git-scanner/internal/aws"
 	"github.com/eminalolita-coder/git-scanner/internal/checkers"
 	"github.com/eminalolita-coder/git-scanner/internal/fetch"
 	"github.com/eminalolita-coder/git-scanner/internal/model"
@@ -29,24 +31,25 @@ type massEntry struct {
 
 func newMassCmd(opts *Options) *cobra.Command {
 	var (
-		concurrency int
-		timeoutSec  int
-		pathsFlag   string
-		scheme      string
-		resolvers   string
-		outputDir   string
-		format      string
-		maxBodyKB   int
-		rate        int
-		verify      bool
-		resolveOnly bool
-		maxPerPat   int
-		progressSec int
-		profile     string
-		gogc        int
-		memLimitMB  int
-		method      string
-		keepAlive   bool
+		concurrency  int
+		timeoutSec   int
+		pathsFlag    string
+		scheme       string
+		resolvers    string
+		outputDir    string
+		format       string
+		maxBodyKB    int
+		rate         int
+		verify       bool
+		resolveOnly  bool
+		maxPerPat    int
+		progressSec  int
+		profile      string
+		gogc         int
+		memLimitMB   int
+		method       string
+		keepAlive    bool
+		checkBuckets bool
 	)
 
 	cmd := &cobra.Command{
@@ -163,6 +166,8 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				requests atomic.Int64
 				findings atomic.Int64
 			)
+			bucketSet := &sync.Map{}
+			verifySem := make(chan struct{}, 256)
 			start := time.Now()
 
 			stop := make(chan struct{})
@@ -201,7 +206,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 							if err != nil || code == 0 || len(body) == 0 {
 								continue
 							}
-							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings)
+							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings, bucketSet, verifySem)
 						}
 						done.Add(1)
 					}
@@ -223,6 +228,10 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 
 			wg.Wait()
 			close(stop)
+
+			if checkBuckets && bucketCount(bucketSet) > 0 {
+				triageBuckets(ctx, out, bucketSet, async, dedup, &findings)
+			}
 
 			el := time.Since(start).Seconds()
 			reqs, ferr := client.Stats()
@@ -252,6 +261,7 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVar(&memLimitMB, "memlimit", 0, "soft memory limit in MB (0 = untouched)")
 	f.StringVar(&method, "method", "get", "HTTP method: get|head (head = no body)")
 	f.BoolVar(&keepAlive, "keep-alive", false, "reuse connections (useful with multiple --paths)")
+	f.BoolVar(&checkBuckets, "check-buckets", false, "triage discovered S3 buckets for public access")
 	return cmd
 }
 
@@ -343,11 +353,14 @@ func fetchOne(ctx context.Context, c *fetch.Client, scheme, host, path string) (
 	return scheme, code, body, err
 }
 
-func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64) {
+func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64, buckets *sync.Map, verifySem chan struct{}) {
 	for _, m := range engine.Scan(body) {
 		key := m.Pattern.ID + "\x00" + m.Secret + "\x00" + host + path
 		if !dedup.First(key) {
 			continue
+		}
+		if m.Pattern.ID == "s3-bucket-host" && buckets != nil {
+			buckets.Store(m.Secret, struct{}{})
 		}
 		f := model.Finding{
 			RuleID:      m.Pattern.ID,
@@ -365,11 +378,19 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 		}
 		if verify {
 			if cs := checkers.For(f.RuleID, f.Tags); len(cs) > 0 {
+				verifySem <- struct{}{}
 				rctx, cancel := context.WithTimeout(context.Background(), checkers.DefaultTimeout)
 				res := cs[0].Check(rctx, f.Secret, f.Extra)
 				cancel()
+				<-verifySem
 				f.Verified = res.Verified
 				f.Checker = cs[0].Name()
+				if res.Err != "" {
+					ensureExtra(&f)["check_error"] = res.Err
+				}
+				if res.Identity != "" {
+					ensureExtra(&f)["identity"] = res.Identity
+				}
 			}
 		}
 		findings.Add(1)
@@ -381,6 +402,61 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 // is not the access key itself.
 func pairedAWSSecret(body []byte, accessKey string) string {
 	return patterns.BestSecretCandidate(body, accessKey, patterns.DefaultSecretEntropy)
+}
+
+func ensureExtra(f *model.Finding) map[string]string {
+	if f.Extra == nil {
+		f.Extra = map[string]string{}
+	}
+	return f.Extra
+}
+
+func bucketNames(m *sync.Map) []string {
+	var out []string
+	m.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok {
+			out = append(out, s)
+		}
+		return true
+	})
+	sort.Strings(out)
+	return out
+}
+
+func bucketCount(m *sync.Map) int {
+	n := 0
+	m.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
+// triageBuckets probes discovered buckets for anonymous listing and emits a
+// finding for each public one.
+func triageBuckets(ctx context.Context, out io.Writer, buckets *sync.Map, w *output.AsyncWriter, dedup *output.ShardedDedup, findings *atomic.Int64) {
+	names := bucketNames(buckets)
+	fmt.Fprintf(out, "\n[buckets] triaging %d discovered bucket(s)...\n", len(names))
+	res := aws.ScanPublicBuckets(ctx, nil, names, 64)
+	public := 0
+	for _, r := range res {
+		if !r.Public {
+			continue
+		}
+		public++
+		fmt.Fprintf(out, "  [PUBLIC] %s region=%s objects=%d+ sample=%v\n", r.Name, r.Region, r.ObjectCount, r.Sample)
+		if !dedup.First("s3-public-bucket\x00" + r.Name) {
+			continue
+		}
+		findings.Add(1)
+		_ = w.Write(model.Finding{
+			RuleID:      "s3-public-bucket",
+			Description: "Publicly listable S3 bucket",
+			Secret:      r.Name,
+			Location:    model.Location{Source: r.Name, File: "/"},
+			Tags:        []string{"s3", "aws"},
+			Detected:    time.Now().UTC(),
+			Extra:       map[string]string{"region": r.Region, "objects": fmt.Sprintf("%d", r.ObjectCount)},
+		})
+	}
+	fmt.Fprintf(out, "[buckets] %d public / %d checked\n", public, len(res))
 }
 
 func loadMassEntries(args []string) ([]massEntry, error) {

@@ -19,6 +19,12 @@ archives — and can verify each hit against the provider's API.
   Shopify, SendGrid, Mailgun, Mailchimp, Slack, Discord, Twilio, Telegram,
   OpenAI/Anthropic/xAI, DigitalOcean, GCP, Vercel, New Relic, Grafana, private
   keys, JWTs and DB/AMQP connection strings.
+- **Exposure rules** — exposed `.git/HEAD`, `.git/config` remotes,
+  `~/.git-credentials`, S3 bucket hostnames, S3 presigned URLs.
+- **Verification** — live checks against provider APIs (GitHub, GitLab, Slack,
+  Stripe, SendGrid, OpenAI, Anthropic, Google API keys, Firebase,
+  DigitalOcean, Telegram, Discord, Vercel, Mailgun, New Relic, SMTP); keys that
+  exist but are restricted (HTTP 403) are reported as verified+restricted.
 - **Obfuscation handling** — base64, hex and percent-decoding, binary string
   extraction, archive walking.
 - **Verification** — live checks against provider APIs (GitHub, GitLab, Slack,
@@ -64,7 +70,7 @@ git-scanner check ghp_012345678901234567890123456789012345
 
 | command | purpose |
 |---------|---------|
-| `mass hosts.txt` | high-throughput scan of thousands of hosts per second |
+| `mass hosts.txt` | high-throughput scan of thousands of hosts per second (`--check-buckets` triages discovered S3 buckets) |
 | `discover hosts.txt` | find exposed `.git` directories (git-clone with `--scan`) |
 | `cve hosts.txt` | probe common misconfigurations / metadata leaks |
 | `envcrack hosts.txt` | fetch `.env`/config files and scan them |

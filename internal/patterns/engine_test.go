@@ -5,6 +5,65 @@ import (
 	"testing"
 )
 
+func TestBuiltinCompiles(t *testing.T) {
+	e := NewEngine(10)
+	if err := e.AddAll(Builtin()); err != nil {
+		t.Fatalf("a builtin pattern failed to compile: %v", err)
+	}
+	if e.Count() < 70 {
+		t.Errorf("expected a substantial rule set, got %d", e.Count())
+	}
+}
+
+func TestGitExposureRules(t *testing.T) {
+	e := NewEngine(10)
+	_ = e.AddAll(Builtin())
+
+	// .git/HEAD
+	head := e.ScanString("ref: refs/heads/main\n")
+	if !hasRule(head, "git-exposed-head") {
+		t.Error("git-exposed-head did not match")
+	}
+	// .git/config remote with credentials
+	cfg := e.ScanString("[remote \"origin\"]\n\turl = https://user:tok3n@git.ex.com/o/r.git\n")
+	if !hasRule(cfg, "git-config-remote") {
+		t.Error("git-config-remote did not match")
+	}
+	if !hasRule(cfg, "git-credentials") {
+		t.Error("git-credentials did not match")
+	}
+	// presigned S3
+	p := e.ScanString("?X-Amz-Credential=AKIAXD7RVKF47MZD3HE5%2F20260101%2Fus-east-1")
+	if !hasRule(p, "aws-presigned-url") {
+		t.Error("aws-presigned-url did not match")
+	}
+	// bucket host
+	b := e.ScanString("https://my-bucket.s3.eu-west-1.amazonaws.com/x")
+	if !hasRule(b, "s3-bucket-host") {
+		t.Error("s3-bucket-host did not match")
+	}
+}
+
+func hasRule(ms []RawMatch, id string) bool {
+	for _, m := range ms {
+		if m.Pattern.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGenericAllowlistJSIdents(t *testing.T) {
+	e := NewEngine(10)
+	if err := e.AddAll(Builtin()); err != nil {
+		t.Fatal(err)
+	}
+	ms := e.ScanString("Token = localStorage.getItem")
+	if hasRule(ms, "generic-api-key") {
+		t.Errorf("localStorage.getItem should be allowlisted, got %+v", ms)
+	}
+}
+
 func TestFreezeParallelScan(t *testing.T) {
 	e := NewEngine(10)
 	if err := e.AddAll(Builtin()); err != nil {

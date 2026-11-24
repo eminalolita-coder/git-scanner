@@ -279,8 +279,17 @@ func (s *Scanner) verifyFinding(f *model.Finding) {
 	res := cs[0].Check(ctx, f.Secret, f.Extra)
 	f.Verified = res.Verified
 	f.Checker = cs[0].Name()
-	if res.Identity != "" && f.Extra == nil {
-		f.Extra = map[string]string{"identity": res.Identity}
+	if res.Err != "" {
+		if f.Extra == nil {
+			f.Extra = map[string]string{}
+		}
+		f.Extra["check_error"] = res.Err
+	}
+	if res.Identity != "" {
+		if f.Extra == nil {
+			f.Extra = map[string]string{}
+		}
+		f.Extra["identity"] = res.Identity
 	}
 }
 

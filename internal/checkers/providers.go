@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -41,6 +43,42 @@ func getJSON(ctx context.Context, url string, hdr map[string]string, out any) (i
 }
 
 func ok(code int) bool { return code >= 200 && code < 300 }
+
+// getBody performs a GET and returns the status and body.
+func getBody(ctx context.Context, url string, hdr map[string]string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("User-Agent", "git-scanner")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	return resp.StatusCode, body, nil
+}
+
+// classifyGoogleKey interprets a Google API response for a key.
+func classifyGoogleKey(code int, body []byte) Result {
+	switch {
+	case ok(code):
+		return Result{Verified: true}
+	case code == 400 || code == 403:
+		s := string(body)
+		if strings.Contains(s, "API_KEY_INVALID") || strings.Contains(s, "API key not valid") {
+			return Result{Err: "key invalid"}
+		}
+		// key exists but the API/permissions are restricted
+		return Result{Verified: true, Identity: "restricted",
+			Meta: map[string]string{"http_status": fmt.Sprintf("%d", code)}}
+	}
+	return Result{Err: fmt.Sprintf("status %d", code)}
+}
 
 func init() {
 	// GitHub
@@ -246,6 +284,43 @@ func init() {
 				return Result{Err: err.Error()}
 			}
 			return Result{Verified: ok(code)}
+		},
+	})
+
+	// Google API key
+	Register(&httpChecker{
+		name: "gcp", tags: tagsOf("gcp"),
+		ruleIDs: tags0("gcp-api-key"),
+		fn: func(ctx context.Context, secret string) Result {
+			code, body, err := getBody(ctx, "https://www.googleapis.com/discovery/v1/apis?key="+secret, nil)
+			if err != nil {
+				return Result{Err: err.Error()}
+			}
+			return classifyGoogleKey(code, body)
+		},
+	})
+
+	// Firebase Realtime Database
+	Register(&httpChecker{
+		name: "firebase", tags: tagsOf("firebase"),
+		ruleIDs: tags0("firebase-host"),
+		fn: func(ctx context.Context, secret string) Result {
+			host := secret
+			if !strings.Contains(host, ".") {
+				host += ".firebaseio.com"
+			}
+			code, _, err := getBody(ctx, "https://"+host+"/.json?shallow=true", nil)
+			if err != nil {
+				return Result{Err: err.Error()}
+			}
+			switch {
+			case ok(code):
+				return Result{Verified: true, Identity: host}
+			case code == 401, code == 403:
+				return Result{Verified: true, Identity: host + " (rules-restricted)",
+					Meta: map[string]string{"http_status": fmt.Sprintf("%d", code)}}
+			}
+			return Result{Err: fmt.Sprintf("status %d", code)}
 		},
 	})
 

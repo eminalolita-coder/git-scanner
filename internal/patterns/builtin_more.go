@@ -44,8 +44,25 @@ func extractedRules() []Pattern {
 		},
 		{
 			ID: "gitlab-oauth", Description: "GitLab OAuth / personal token (gl)",
-			Regex:       `(?:^|[^\w])(gl[a-z]{2,5}-[0-9a-zA-Z\-_]{20,})(?:[^\w]|$)`,
+			Regex:       `(?:^|[^\w])(gl[a-z]{2,5}-[0-9A-Za-z]{20})(?:[^\w]|$)`,
 			SecretGroup: 1, Keywords: []string{"gl"}, Tags: []string{"gitlab"},
+		},
+
+		// ---- Git exposure ----
+		{
+			ID: "git-exposed-head", Description: "Exposed .git HEAD",
+			Regex:       `(?m)^ref:\s+refs/heads/([A-Za-z0-9._/\-]+)`,
+			SecretGroup: 1, Keywords: []string{"ref:"}, Tags: []string{"git"},
+		},
+		{
+			ID: "git-config-remote", Description: "Git remote URL in .git/config",
+			Regex:       `(?mi)^\s*url\s*=\s*(https?://(?:[^:@/\s]+(?::[^@/\s]+)?@)?[^\s]+)`,
+			SecretGroup: 1, Keywords: []string{"url"}, Tags: []string{"git"},
+		},
+		{
+			ID: "git-credentials", Description: "Plain ~/.git-credentials entry",
+			Regex:       `https?://([^:@/\s"',]+):([^@\s"',]+)@[^\s"',]+`,
+			SecretGroup: 2, Keywords: []string{"@"}, Tags: []string{"git"},
 		},
 
 		// ---- Shopify variants ----
@@ -72,9 +89,24 @@ func extractedRules() []Pattern {
 			Keywords: []string{"arn:aws:iam"}, Tags: []string{"aws"},
 		},
 		{
-			ID: "aws-account-id", Description: "AWS account id",
-			Regex:    `(?:^|[^\w])(\d{12})(?:[^\w]|$)`,
-			Keywords: []string{"account"}, Tags: []string{"aws"}, Entropy: 1.0,
+			ID: "aws-arn", Description: "AWS ARN",
+			Regex:    `arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(?:[0-9]{12})?:[^\s"'<>]+`,
+			Keywords: []string{"arn:aws"}, Tags: []string{"aws"},
+		},
+		{
+			ID: "aws-account-id", Description: "AWS account id (in context)",
+			Regex:       `(?i)account[\s:=#'"]{0,12}([0-9]{12})`,
+			SecretGroup: 1, Keywords: []string{"account"}, Tags: []string{"aws"},
+		},
+		{
+			ID: "aws-presigned-url", Description: "AWS S3 presigned URL (X-Amz-Credential)",
+			Regex:       `X-Amz-Credential=([A-Za-z0-9%_\-/+=]+)`,
+			SecretGroup: 1, Keywords: []string{"x-amz-credential"}, Tags: []string{"aws", "s3"},
+		},
+		{
+			ID: "s3-bucket-host", Description: "S3 bucket hostname",
+			Regex:       `(?:https?://)?([a-z0-9][a-z0-9.\-]{1,61}[a-z0-9])\.s3(?:[.\-][a-z0-9\-]+)*\.amazonaws\.com`,
+			SecretGroup: 1, Keywords: []string{".s3", "amazonaws"}, Tags: []string{"s3"},
 		},
 
 		// ---- Messaging ----
@@ -156,8 +188,8 @@ func extractedRules() []Pattern {
 		},
 		{
 			ID: "internal-host", Description: "Internal / cluster hostname",
-			Regex:    `[a-zA-Z0-9._-]+\.(?:svc\.cluster\.local|internal|local|default)(?::\d+)?`,
-			Keywords: []string{".local", ".internal", ".default"}, Tags: []string{"internal"},
+			Regex:    `[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*\.(?:svc\.cluster\.local|cluster\.local|internal|local)(?::\d+)?`,
+			Keywords: []string{".local", ".internal"}, Tags: []string{"internal"},
 		},
 		{
 			ID: "base64-blob", Description: "Embedded base64 blob",

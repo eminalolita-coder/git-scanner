@@ -6,8 +6,9 @@ func humanRules() []Pattern {
 		// ---- Cloud / infra ----
 		{
 			ID: "aws-secret-access-key", Description: "AWS Secret Access Key",
-			Regex:    `(?i)aws_?(?:secret)?_?(?:access)?_?key["'\s:=]{1,6}([A-Za-z0-9/+=]{40})\b`,
-			Keywords: []string{"aws"}, Tags: []string{"aws"},
+			Regex:       `(?i)aws_?(?:secret)?_?(?:access)?_?key["'\s:=]{1,6}([A-Za-z0-9/+=]{40})\b`,
+			SecretGroup: 1,
+			Keywords:    []string{"aws"}, Tags: []string{"aws"},
 		},
 		{
 			ID: "aws-session-token", Description: "AWS Session Token",
@@ -230,7 +231,7 @@ func humanRules() []Pattern {
 		},
 		{
 			ID: "http-basic-auth-url", Description: "URL with embedded credentials",
-			Regex:    `(?i)\b[a-z]+://[^:\s/@]+:[^@\s/]+@[a-z0-9.\-]+\.[a-z]{2,}`,
+			Regex:    `(?i)\b[a-z][a-z0-9+.\-]*://[^:@/\s"',]+:[^@\s"',]+@[a-z0-9.\-]+\.[a-z]{2,}`,
 			Keywords: []string{"://"}, Tags: []string{"url"},
 		},
 
@@ -244,10 +245,15 @@ func humanRules() []Pattern {
 		// ---- Generic high-entropy assignments ----
 		{
 			ID: "generic-api-key", Description: "Generic API key / secret assignment",
-			Regex:    `(?i)(?:api[_-]?key|apikey|secret|token|passwd|password|pwd|auth)["'\s]{0,4}[:=]\s*["']?([A-Za-z0-9_\-/+=.]{16,64})["']?`,
-			Keywords: []string{"key", "secret", "token", "pass", "pwd", "auth"},
-			Tags:     []string{"generic"}, Entropy: 3.3,
-			Allowlist: []string{`^(?i)(true|false|null|undefined|changeme|password|example|placeholder)$`},
+			Regex:       `(?i)(?:api[_-]?key|apikey|secret|token|passwd|password|pwd|auth)["'\s]{0,4}[:=]\s*["']?([A-Za-z0-9_\-/+=.]{16,64})["']?`,
+			SecretGroup: 1,
+			Keywords:    []string{"key", "secret", "token", "pass", "pwd", "auth"},
+			Tags:        []string{"generic"}, Entropy: 3.3,
+			Allowlist: []string{
+				`^(?i)(true|false|null|undefined|changeme|password|example|placeholder)$`,
+				`^(?i)(localStorage|sessionStorage)\..+$`,
+				`^(?i)(getItem|setItem|removeItem|document|window|location|JSON)$`,
+			},
 		},
 		{
 			ID: "generic-high-entropy", Description: "High-entropy string",
