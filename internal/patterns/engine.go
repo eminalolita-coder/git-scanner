@@ -36,6 +36,7 @@ type RawMatch struct {
 // Engine runs a compiled set of patterns over content.
 type Engine struct {
 	patterns      []*Pattern
+	frozen        []*Pattern
 	maxPerPattern int
 	mu            sync.RWMutex
 }
@@ -85,13 +86,26 @@ func (e *Engine) Count() int {
 	return len(e.patterns)
 }
 
+// Freeze snapshots the patterns so Scan can read them without locking. Call it
+// after all Add/AddAll calls, before scanning in parallel.
+func (e *Engine) Freeze() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.frozen == nil {
+		e.frozen = append([]*Pattern(nil), e.patterns...)
+	}
+}
+
 // Scan runs all patterns over content and returns de-duplicated raw matches.
 func (e *Engine) Scan(content []byte) []RawMatch {
 	s := string(content)
 	lower := strings.ToLower(s)
-	e.mu.RLock()
-	rules := e.patterns
-	e.mu.RUnlock()
+	rules := e.frozen
+	if rules == nil {
+		e.mu.RLock()
+		rules = e.patterns
+		e.mu.RUnlock()
+	}
 
 	var out []RawMatch
 	seen := make(map[string]struct{})

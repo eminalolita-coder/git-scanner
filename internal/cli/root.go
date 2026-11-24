@@ -62,6 +62,7 @@ listing one target per line.`,
 
 	root.AddCommand(
 		newScanCmd(opts),
+		newMassCmd(opts),
 		newCheckCmd(opts),
 		newDiscoverCmd(opts),
 		newCVECmd(opts),

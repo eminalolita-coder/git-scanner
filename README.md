@@ -64,6 +64,7 @@ git-scanner check ghp_012345678901234567890123456789012345
 
 | command | purpose |
 |---------|---------|
+| `mass hosts.txt` | high-throughput scan of thousands of hosts per second |
 | `discover hosts.txt` | find exposed `.git` directories (git-clone with `--scan`) |
 | `cve hosts.txt` | probe common misconfigurations / metadata leaks |
 | `envcrack hosts.txt` | fetch `.env`/config files and scan them |
@@ -94,6 +95,41 @@ git-scanner s3 --account --access-key AKIA… --secret-key … --scan
 | `--no-color` | disable ANSI colors |
 | `-t, --threads` | concurrency override |
 | `--timeout` | per-request timeout (seconds) |
+
+## Performance — reaching thousands of hosts per second
+
+Throughput is `concurrency / latency`; everything else is tuning. Measured on a
+16-core box against a mixed host list (average response ≈ 2.9 s including
+timeouts):
+
+| concurrency | hosts/s |
+|-------------|---------|
+| 500 | ~180 |
+| 4 000 | ~1 370 |
+| 12 000 | ~4 385 |
+
+```sh
+ulimit -n 200000        # raise the fd limit first (default is often 10240)
+GOGC=400 git-scanner mass hosts.txt \
+  --concurrency 12000 --timeout 2 --progress 5 -o hits
+```
+
+What makes it fast:
+
+- **Pooled DNS + dial by IP** while preserving TLS SNI and the Host header.
+  Input may already be `domain ip` (pre-resolved with massdns/dnsx) to skip DNS
+  entirely; use `--resolve-only` to emit such a file.
+- **Fixed worker pool** (no goroutine per host) fed by a buffered channel.
+- **Tuned transport**: keep-alives off for single-path scans, HTTP/2 off,
+  dial timeout aligned with the request timeout.
+- **Frozen pattern engine** read without locks, `--matches-per-pattern 1`.
+- **Sharded de-dup + asynchronous buffered writer** (1 MiB buffers) so disk
+  writes never block workers.
+- `--rate` caps requests/second; `--paths` fetches several paths per host over a
+  single connection.
+
+For IP lists that mostly answer over plain HTTP, add `--scheme http` to avoid a
+wasted TLS attempt per host.
 
 ## Configuration
 
@@ -137,6 +173,7 @@ cmd/git-scanner      entry point
 internal/cli         commands (scan, check, discover, cve, envcrack, dump, aws, js, config, version)
 internal/config      typed config, load/validate/watch
 internal/scanner     pipeline orchestrator (proxy-aware)
+internal/fetch       high-throughput fetch: pooled DNS, dial-by-IP, tuned client
 internal/gitdump     clone + worktree/history extraction
 internal/source      target classification (file/dir/url/repo)
 internal/patterns    regex engine + built-in rules
@@ -169,6 +206,7 @@ Core and recon features are implemented and tested:
 - [x] Deep multi-service `aws` enumeration (Secrets, SSM, Lambda, CFN, ECR, RDS, EC2, SQS/SNS, DynamoDB, KMS)
 - [x] SOCKS proxy rotation for git cloning
 - [x] Lambda / ECS environment variable extraction
+- [x] High-throughput `mass` mode (pooled DNS, dial-by-IP, worker pool, async writer)
 
 ## Development
 

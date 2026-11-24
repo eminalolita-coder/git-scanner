@@ -2,6 +2,7 @@
 package output
 
 import (
+	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -62,6 +63,7 @@ func (s *streamWriter) Path() string { return "<stdout>" }
 type jsonlWriter struct {
 	mu  sync.Mutex
 	f   *os.File
+	bw  *bufio.Writer
 	enc *json.Encoder
 }
 
@@ -70,8 +72,8 @@ func newJSONL(path string) (*jsonlWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc := json.NewEncoder(f)
-	return &jsonlWriter{f: f, enc: enc}, nil
+	bw := bufio.NewWriterSize(f, 1<<20)
+	return &jsonlWriter{f: f, bw: bw, enc: json.NewEncoder(bw)}, nil
 }
 
 func (w *jsonlWriter) Write(f model.Finding) error {
@@ -79,12 +81,21 @@ func (w *jsonlWriter) Write(f model.Finding) error {
 	defer w.mu.Unlock()
 	return w.enc.Encode(f)
 }
-func (w *jsonlWriter) Close() error { return w.f.Close() }
+func (w *jsonlWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.bw.Flush(); err != nil {
+		_ = w.f.Close()
+		return err
+	}
+	return w.f.Close()
+}
 func (w *jsonlWriter) Path() string { return w.f.Name() }
 
 type csvWriter struct {
 	mu sync.Mutex
 	f  *os.File
+	bw *bufio.Writer
 	w  *csv.Writer
 }
 
@@ -93,9 +104,10 @@ func newCSV(path string) (*csvWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	cw := csv.NewWriter(f)
+	bw := bufio.NewWriterSize(f, 1<<20)
+	cw := csv.NewWriter(bw)
 	_ = cw.Write([]string{"rule_id", "description", "secret", "source", "file", "line", "commit", "verified", "checker", "tags", "detected"})
-	return &csvWriter{f: f, w: cw}, nil
+	return &csvWriter{f: f, bw: bw, w: cw}, nil
 }
 
 func (w *csvWriter) Write(f model.Finding) error {
@@ -108,12 +120,22 @@ func (w *csvWriter) Write(f model.Finding) error {
 		f.Detected.Format(time.RFC3339),
 	})
 }
-func (w *csvWriter) Close() error { w.w.Flush(); return w.f.Close() }
+func (w *csvWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.w.Flush()
+	if err := w.bw.Flush(); err != nil {
+		_ = w.f.Close()
+		return err
+	}
+	return w.f.Close()
+}
 func (w *csvWriter) Path() string { return w.f.Name() }
 
 type txtWriter struct {
 	mu sync.Mutex
 	f  *os.File
+	bw *bufio.Writer
 }
 
 func newTXT(path string) (*txtWriter, error) {
@@ -121,7 +143,7 @@ func newTXT(path string) (*txtWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &txtWriter{f: f}, nil
+	return &txtWriter{f: f, bw: bufio.NewWriterSize(f, 1<<20)}, nil
 }
 
 func (w *txtWriter) Write(f model.Finding) error {
@@ -135,10 +157,18 @@ func (w *txtWriter) Write(f model.Finding) error {
 	if f.Verified {
 		mark = "✓"
 	}
-	_, err := fmt.Fprintf(w.f, "%s %-28s %s  [%s] %s\n", mark, f.RuleID, loc, f.Location.Source, f.Secret)
+	_, err := fmt.Fprintf(w.bw, "%s %-28s %s  [%s] %s\n", mark, f.RuleID, loc, f.Location.Source, f.Secret)
 	return err
 }
-func (w *txtWriter) Close() error { return w.f.Close() }
+func (w *txtWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.bw.Flush(); err != nil {
+		_ = w.f.Close()
+		return err
+	}
+	return w.f.Close()
+}
 func (w *txtWriter) Path() string { return w.f.Name() }
 
 func join(ss []string) string {

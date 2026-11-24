@@ -1,6 +1,28 @@
 package patterns
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
+
+func TestFreezeParallelScan(t *testing.T) {
+	e := NewEngine(10)
+	if err := e.AddAll(Builtin()); err != nil {
+		t.Fatal(err)
+	}
+	e.Freeze()
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if len(e.ScanString("GITHUB_TOKEN=ghp_012345678901234567890123456789012345")) == 0 {
+				t.Error("no match after freeze")
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 func TestEngineScan(t *testing.T) {
 	e := NewEngine(10)
