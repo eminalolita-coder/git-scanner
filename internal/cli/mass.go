@@ -230,11 +230,14 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 						if limiter != nil {
 							limiter.wait(ctx)
 						}
+						// per-host watchdog: no host can stall the worker
+						budget := time.Duration(timeoutSec*len(paths)*2+10) * time.Second
+						hctx, hcancel := context.WithTimeout(ctx, budget)
 						var rootBody []byte
 						var rootScheme string
 						for _, p := range paths {
 							requests.Add(1)
-							sch, code, body, err := fetchMaybeRange(ctx, client, scheme, e.host, p, rangeMode, rangeSizeKB)
+							sch, code, body, err := fetchMaybeRange(hctx, client, scheme, e.host, p, rangeMode, rangeSizeKB)
 							if err != nil || code == 0 || len(body) == 0 {
 								continue
 							}
@@ -244,11 +247,12 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 							scanMassBody(engine, dedup, async, verify, e.host, p, body, &findings, bucketSet, repoSet, tokenSet, verifySem, decode)
 						}
 						if crawlJS && len(rootBody) > 0 && jscracker.IsHTML(rootBody) {
-							crawlScripts(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, rootBody, jsMax, decode, bucketSet, repoSet, tokenSet)
+							crawlScripts(hctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, rootBody, jsMax, decode, bucketSet, repoSet, tokenSet)
 						}
 						if followRobots {
-							crawlRobots(ctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, robotsMax, decode, bucketSet, repoSet, tokenSet)
+							crawlRobots(hctx, client, engine, dedup, async, &findings, verifySem, scheme, rootScheme, e.host, robotsMax, decode, bucketSet, repoSet, tokenSet)
 						}
+						hcancel()
 						done.Add(1)
 					}
 				}()
@@ -439,8 +443,13 @@ func fetchOne(ctx context.Context, c *fetch.Client, scheme, host, path string) (
 
 func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output.AsyncWriter, verify bool, host, path string, body []byte, findings *atomic.Int64, buckets, repos, tokens *sync.Map, verifySem chan struct{}, decode bool) {
 	blobs := [][]byte{body}
+	// decoding is CPU heavy on large bodies: bound it generously
 	if decode && len(body) < 4<<20 {
-		blobs = append(blobs, analyzer.Deobfuscate(body, analyzer.DefaultOptions())...)
+		dec := analyzer.Deobfuscate(body, analyzer.DefaultOptions())
+		if len(dec) > 64 {
+			dec = dec[:64]
+		}
+		blobs = append(blobs, dec...)
 	}
 	for _, blob := range blobs {
 		for _, m := range engine.Scan(blob) {

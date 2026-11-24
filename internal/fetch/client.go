@@ -36,6 +36,7 @@ type Client struct {
 	maxBody int64
 	method  string
 	noBody  bool
+	timeout time.Duration
 	reqs    atomic.Int64
 	errs    atomic.Int64
 }
@@ -98,6 +99,37 @@ func New(o Options) *Client {
 		maxBody: o.MaxBody,
 		method:  strings.ToUpper(strings.TrimSpace(o.Method)),
 		noBody:  o.NoBody,
+		timeout: o.Timeout,
+	}
+}
+
+// readBody reads the body, hard-bounded in time: some servers trickle data and
+// the http.Client timeout alone has been observed not to unblock the read.
+func (c *Client) readBody(resp *http.Response, limit int64) ([]byte, error) {
+	type res struct {
+		b   []byte
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		b, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+		ch <- res{b, err}
+	}()
+	if c.timeout <= 0 {
+		r := <-ch
+		return r.b, r.err
+	}
+	select {
+	case r := <-ch:
+		return r.b, r.err
+	case <-time.After(c.timeout):
+		_ = resp.Body.Close() // unblock the pending read
+		select {
+		case r := <-ch:
+			return r.b, r.err
+		case <-time.After(2 * time.Second):
+			return nil, errors.New("body read timeout")
+		}
 	}
 }
 
@@ -146,10 +178,10 @@ func (c *Client) FetchRange(ctx context.Context, scheme, host, path string, star
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		// server ignored the range: read at most length bytes
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, length))
+		body, _ := c.readBody(resp, length)
 		return resp.StatusCode, body, nil
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, length+4096))
+	body, _ := c.readBody(resp, length+4096)
 	return resp.StatusCode, body, nil
 }
 
@@ -184,7 +216,7 @@ func (c *Client) Fetch(ctx context.Context, scheme, host, path string) (int, []b
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 0))
 		return resp.StatusCode, nil, nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody))
+	body, err := c.readBody(resp, c.maxBody)
 	if err != nil {
 		return resp.StatusCode, body, err
 	}
