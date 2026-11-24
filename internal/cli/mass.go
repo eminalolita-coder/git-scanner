@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +42,11 @@ func newMassCmd(opts *Options) *cobra.Command {
 		resolveOnly bool
 		maxPerPat   int
 		progressSec int
+		profile     string
+		gogc        int
+		memLimitMB  int
+		method      string
+		keepAlive   bool
 	)
 
 	cmd := &cobra.Command{
@@ -83,8 +90,11 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				}
 			}
 
+			applyProfile(cmd, profile, &concurrency, &timeoutSec, &maxBodyKB, &gogc)
+			applyRuntime(gogc, memLimitMB)
+
 			if concurrency <= 0 {
-				concurrency = 1000
+				concurrency = autoConcurrency()
 			}
 			if timeoutSec <= 0 {
 				timeoutSec = 5
@@ -98,6 +108,9 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
+
+			fmt.Fprintf(out, "profile=%s concurrency=%d timeout=%ds body=%dKB method=%s gogc=%d cpu=%d\n",
+				profile, concurrency, timeoutSec, maxBodyKB, method, gogc, runtime.NumCPU())
 
 			fmt.Fprintf(out, "resolving/loading %d hosts...\n", len(entries))
 			res.PreResolve(ctx, hostList(entries), min(concurrency, 1000))
@@ -124,7 +137,12 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				Timeout:           time.Duration(timeoutSec) * time.Second,
 				Resolver:          res,
 				MaxBody:           int64(maxBodyKB) << 10,
-				DisableKeepAlives: len(splitCSV(pathsFlag)) <= 1,
+				DisableKeepAlives: !keepAlive && len(splitCSV(pathsFlag)) <= 1,
+				Method:            method,
+				NoBody:            strings.EqualFold(method, "head"),
+				MaxIdleConns:      100000,
+				MaxIdlePerHost:    16,
+				MaxConnsPerHost:   32,
 			})
 
 			paths := splitCSV(pathsFlag)
@@ -229,7 +247,92 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.BoolVar(&resolveOnly, "resolve-only", false, "only resolve hosts and print ip")
 	f.IntVar(&maxPerPat, "matches-per-pattern", 1, "max matches per pattern per body")
 	f.IntVar(&progressSec, "progress", 2, "progress interval (seconds)")
+	f.StringVar(&profile, "profile", "auto", "tuning profile: auto|small|vps|max")
+	f.IntVar(&gogc, "gogc", 0, "set GOGC (0 = untouched); profiles set 400-800")
+	f.IntVar(&memLimitMB, "memlimit", 0, "soft memory limit in MB (0 = untouched)")
+	f.StringVar(&method, "method", "get", "HTTP method: get|head (head = no body)")
+	f.BoolVar(&keepAlive, "keep-alive", false, "reuse connections (useful with multiple --paths)")
 	return cmd
+}
+
+// autoConcurrency picks a safe default from the CPU count.
+func autoConcurrency() int {
+	return clamp(runtime.NumCPU()*150, 500, 20000)
+}
+
+func profileConcurrency(p string) int {
+	n := runtime.NumCPU()
+	switch p {
+	case "small":
+		return clamp(n*50, 500, 3000)
+	case "vps":
+		return clamp(n*250, 2000, 40000)
+	case "max":
+		return clamp(n*500, 5000, 120000)
+	default: // auto
+		return autoConcurrency()
+	}
+}
+
+func profileMaxBodyKB(p string) int {
+	switch p {
+	case "max":
+		return 256
+	case "vps":
+		return 512
+	default:
+		return 512
+	}
+}
+
+func profileGOGC(p string) int {
+	switch p {
+	case "max":
+		return 800
+	case "vps":
+		return 400
+	default:
+		return 0
+	}
+}
+
+// applyProfile fills unset flags from the chosen profile.
+func applyProfile(cmd *cobra.Command, profile string, concurrency, timeoutSec, maxBodyKB, gogc *int) {
+	if profile == "" {
+		profile = "auto"
+	}
+	if !cmd.Flags().Changed("concurrency") {
+		*concurrency = profileConcurrency(profile)
+	}
+	if !cmd.Flags().Changed("max-body") && profileMaxBodyKB(profile) < *maxBodyKB {
+		*maxBodyKB = profileMaxBodyKB(profile)
+	}
+	if !cmd.Flags().Changed("gogc") && profileGOGC(profile) > 0 {
+		*gogc = profileGOGC(profile)
+	}
+	if !cmd.Flags().Changed("timeout") && (profile == "vps" || profile == "max") {
+		*timeoutSec = 3
+	}
+}
+
+// applyRuntime tunes the Go runtime for throughput.
+func applyRuntime(gogc, memLimitMB int) {
+	if gogc > 0 {
+		debug.SetGCPercent(gogc)
+	}
+	if memLimitMB > 0 {
+		debug.SetMemoryLimit(int64(memLimitMB) << 20)
+	}
+}
+
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func fetchOne(ctx context.Context, c *fetch.Client, scheme, host, path string) (string, int, []byte, error) {

@@ -23,6 +23,8 @@ type Options struct {
 	DisableKeepAlives bool
 	UserAgent         string
 	Insecure          bool
+	Method            string // GET (default) or HEAD
+	NoBody            bool   // do not read the response body
 }
 
 // Client is a tuned HTTP client that resolves and dials by IP.
@@ -31,6 +33,8 @@ type Client struct {
 	res     *Resolver
 	ua      string
 	maxBody int64
+	method  string
+	noBody  bool
 	reqs    atomic.Int64
 	errs    atomic.Int64
 }
@@ -91,6 +95,8 @@ func New(o Options) *Client {
 		res:     res,
 		ua:      o.UserAgent,
 		maxBody: o.MaxBody,
+		method:  strings.ToUpper(strings.TrimSpace(o.Method)),
+		noBody:  o.NoBody,
 	}
 }
 
@@ -103,7 +109,11 @@ func (c *Client) Fetch(ctx context.Context, scheme, host, path string) (int, []b
 		path = "/"
 	}
 	url := scheme + "://" + host + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	method := c.method
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -117,6 +127,10 @@ func (c *Client) Fetch(ctx context.Context, scheme, host, path string) (int, []b
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
+	if c.noBody || method == http.MethodHead {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 0))
+		return resp.StatusCode, nil, nil
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody))
 	if err != nil {
 		return resp.StatusCode, body, err

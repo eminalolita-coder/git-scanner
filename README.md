@@ -131,6 +131,40 @@ What makes it fast:
 For IP lists that mostly answer over plain HTTP, add `--scheme http` to avoid a
 wasted TLS attempt per host.
 
+### Datacenter profile (e.g. 52 vCPU / 160 GB / 10 Gb/s)
+
+Tune the kernel first, then size concurrency from the **NIC**, not the CPU:
+
+```sh
+sudo ./scripts/tune-linux.sh     # sysctl + limits: somaxconn, ports, tw_reuse, bbr
+ulimit -n 1048576
+GOGC=400 git-scanner mass hosts.txt --profile vps --concurrency 20000 \
+  --timeout 3 --scheme http --max-body 256 -o hits
+```
+
+`--profile auto|small|vps|max` derives concurrency from the CPU count
+(×150 / ×50 / ×250 / ×500) and sets GOGC (0/0/400/800); explicit flags win.
+
+Bandwidth ceiling on 10 Gb/s (≈ 1.25 GB/s of payload) as a function of body size:
+
+| average body | max hosts/s (bandwidth-bound) |
+|--------------|-------------------------------|
+| 10 KB | ~125 000 |
+| 25 KB | ~50 000 |
+| 100 KB | ~12 000 |
+| 500 KB | ~2 500 |
+
+Conclusions for that box:
+
+- keep `--max-body` at **128–256 KB**, and use `--method head` when you only
+  need the status line — then the limit is concurrency, not bandwidth;
+- 52 vCPU sustains >100k TLS handshakes/s, so **CPU is not the constraint** and
+  a single process is enough;
+- ephemeral ports are rarely the issue for a mass scan because the 4-tuple
+  varies with the destination IP — the sysctl script still raises the limits;
+- watch `dropped:` in the summary: it only appears if the writer buffer
+  overflows (raise `--concurrency` then).
+
 ## Configuration
 
 ```sh
