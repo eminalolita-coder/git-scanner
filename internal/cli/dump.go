@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -12,16 +13,17 @@ import (
 
 func newDumpCmd(opts *Options) *cobra.Command {
 	var (
-		token     string
-		user      string
-		forge     string
-		org       string
-		owner     string
-		limit     int
-		scan      bool
-		private   bool
-		outputDir string
-		format    string
+		token         string
+		user          string
+		forge         string
+		org           string
+		owner         string
+		limit         int
+		scan          bool
+		private       bool
+		outputDir     string
+		format        string
+		targetTimeout int
 	)
 
 	cmd := &cobra.Command{
@@ -98,7 +100,7 @@ clone and scan every discovered repository.`,
 					}
 					defer w.Close()
 					fmt.Fprintf(out, "findings -> %s\n", w.Path())
-					runScanWriter(cmd.Context(), cfg, engine, w, targets, out)
+					runScanWriter(cmd.Context(), cfg, engine, w, targets, out, time.Duration(targetTimeout)*time.Second)
 				} else {
 					runScanStream(cmd.Context(), cfg, engine, out, targets)
 				}
@@ -115,6 +117,7 @@ clone and scan every discovered repository.`,
 	f.StringVar(&owner, "owner", "", "list a specific owner's repositories (works without a token)")
 	f.StringVarP(&outputDir, "output", "o", "", "write findings of --scan to a directory")
 	f.StringVar(&format, "format", "jsonl", "findings format when -o is used")
+	f.IntVar(&targetTimeout, "target-timeout", 300, "per-repository timeout in seconds")
 	f.IntVarP(&limit, "limit", "n", 100, "max repositories to list")
 	f.BoolVar(&scan, "scan", false, "clone and scan each repository")
 	f.BoolVar(&private, "private-only", false, "list only private repositories")

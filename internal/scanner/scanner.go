@@ -38,6 +38,9 @@ type Options struct {
 	Verify   bool
 	Writer   output.Writer
 	Notifier *webhook.Dispatcher
+	// TargetTimeout bounds a single target (a hung clone must not block the
+	// whole run). Defaults to 300s when zero.
+	TargetTimeout time.Duration
 }
 
 // Stats holds live counters.
@@ -64,6 +67,8 @@ type Scanner struct {
 	verified int64
 
 	checkSem chan struct{}
+
+	targetTimeout time.Duration
 }
 
 // New builds a Scanner.
@@ -87,17 +92,22 @@ func New(o Options) *Scanner {
 		logger.Infof("proxy enabled (%d entrie(s))", 1)
 	}
 
+	tt := o.TargetTimeout
+	if tt <= 0 {
+		tt = 300 * time.Second
+	}
 	return &Scanner{
-		cfg:      o.Config,
-		engine:   o.Engine,
-		verify:   o.Verify,
-		writer:   o.Writer,
-		notif:    o.Notifier,
-		dedup:    output.NewDedup(o.Config.ScanLimits.MaxDedupEntries),
-		an:       an,
-		proxy:    mgr,
-		client:   client,
-		checkSem: make(chan struct{}, max(1, o.Config.Performance.CheckerConcurrency)),
+		cfg:           o.Config,
+		engine:        o.Engine,
+		verify:        o.Verify,
+		writer:        o.Writer,
+		notif:         o.Notifier,
+		dedup:         output.NewDedup(o.Config.ScanLimits.MaxDedupEntries),
+		an:            an,
+		proxy:         mgr,
+		client:        client,
+		checkSem:      make(chan struct{}, max(1, o.Config.Performance.CheckerConcurrency)),
+		targetTimeout: tt,
 	}
 }
 
@@ -133,6 +143,11 @@ func (s *Scanner) Run(ctx context.Context, targets []model.Target) {
 }
 
 func (s *Scanner) scanTarget(ctx context.Context, t model.Target) error {
+	if s.targetTimeout > 0 {
+		tctx, cancel := context.WithTimeout(ctx, s.targetTimeout)
+		defer cancel()
+		ctx = tctx
+	}
 	switch t.Kind {
 	case model.KindGitRepo:
 		cloner := gitdump.New(s.cfg.GitScanner, s.cfg.ScanLimits)

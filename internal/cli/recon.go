@@ -67,16 +67,17 @@ func schemesFor(h string) []string {
 
 // runScanStream scans targets and streams findings to out.
 func runScanStream(ctx context.Context, cfg *config.Config, engine *patterns.Engine, out io.Writer, targets []model.Target) {
-	runScanWriter(ctx, cfg, engine, output.NewStream(out), targets, out)
+	runScanWriter(ctx, cfg, engine, output.NewStream(out), targets, out, 0)
 }
 
 // runScanWriter scans targets writing findings through w.
-func runScanWriter(ctx context.Context, cfg *config.Config, engine *patterns.Engine, w output.Writer, targets []model.Target, out io.Writer) {
+func runScanWriter(ctx context.Context, cfg *config.Config, engine *patterns.Engine, w output.Writer, targets []model.Target, out io.Writer, targetTimeout time.Duration) {
 	sc := scanner.New(scanner.Options{
-		Config:   cfg,
-		Engine:   engine,
-		Writer:   w,
-		Notifier: webhook.New(cfg.Webhooks),
+		Config:        cfg,
+		Engine:        engine,
+		Writer:        w,
+		Notifier:      webhook.New(cfg.Webhooks),
+		TargetTimeout: targetTimeout,
 	})
 	sc.Run(ctx, targets)
 	st := sc.Stats()
