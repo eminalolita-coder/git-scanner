@@ -1,0 +1,55 @@
+package patterns
+
+import "regexp"
+
+// reSecretCandidate matches a 40-character token at word boundaries. The
+// character class covers base64 as used by AWS secret access keys.
+var reSecretCandidate = regexp.MustCompile(`\b([A-Za-z0-9/+=]{40})\b`)
+
+// BestSecretCandidate returns the highest-entropy 40-char token in content,
+// excluding the given value, provided its entropy is at least minEntropy.
+// It is a heuristic to pair an AWS access key id with a nearby secret key.
+//
+// Candidates shaped like "<word>=" (e.g. "Signature=20b4…") are rejected,
+// since a run that merely happens to be 40 chars long is usually not a key.
+func BestSecretCandidate(content []byte, exclude string, minEntropy float64) string {
+	best := ""
+	bestEnt := minEntropy
+	for _, m := range reSecretCandidate.FindAllStringSubmatch(string(content), 40) {
+		c := m[1]
+		if c == exclude || looksLikeLabel(c) {
+			continue
+		}
+		if e := Shannon(c); e > bestEnt {
+			best, bestEnt = c, e
+		}
+	}
+	return best
+}
+
+// looksLikeLabel reports whether c is "<letters>=" + tail, i.e. a label
+// concatenated with its value rather than a bare key.
+func looksLikeLabel(c string) bool {
+	i := indexByte(c, '=')
+	if i < 4 {
+		return false
+	}
+	for j := 0; j < i; j++ {
+		if c[j] < 'A' || (c[j] > 'Z' && c[j] < 'a') || c[j] > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
+// DefaultSecretEntropy is the pairing threshold used by the scanners.
+const DefaultSecretEntropy = 4.2

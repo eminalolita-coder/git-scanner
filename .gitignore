@@ -16,3 +16,4 @@ config.local.json
 .idea/
 .vscode/
 *.swp
+/runs/

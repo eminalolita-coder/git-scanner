@@ -361,10 +361,7 @@ func max(a, b int) int {
 	return b
 }
 
-var (
-	reAWSSecret  = regexp.MustCompile(`\b([A-Za-z0-9/+=]{40})\b`)
-	reAWSSession = regexp.MustCompile(`(?i)aws_session_token["'\s:=]{1,6}([A-Za-z0-9/+=]{100,})`)
-)
+var reAWSSession = regexp.MustCompile(`(?i)aws_session_token["'\s:=]{1,6}([A-Za-z0-9/+=]{100,})`)
 
 func isAWSKey(ruleID string) bool {
 	return ruleID == "aws-access-key-id" || ruleID == "aws-access-key-boundary"
@@ -372,11 +369,5 @@ func isAWSKey(ruleID string) bool {
 
 // firstAWSSecret finds a plausible paired AWS secret key near the access key.
 func firstAWSSecret(blob []byte, accessKey string) string {
-	s := string(blob)
-	for _, m := range reAWSSecret.FindAllStringSubmatch(s, 20) {
-		if m[1] != accessKey {
-			return m[1]
-		}
-	}
-	return ""
+	return patterns.BestSecretCandidate(blob, accessKey, patterns.DefaultSecretEntropy)
 }

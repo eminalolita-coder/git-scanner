@@ -358,10 +358,15 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 			Tags:        m.Pattern.Tags,
 			Detected:    time.Now().UTC(),
 		}
+		if strings.HasPrefix(f.RuleID, "aws-access-key") {
+			if sec := pairedAWSSecret(body, f.Secret); sec != "" {
+				f.Extra = map[string]string{"secret": sec, "account_hint": "pair from same body"}
+			}
+		}
 		if verify {
 			if cs := checkers.For(f.RuleID, f.Tags); len(cs) > 0 {
 				rctx, cancel := context.WithTimeout(context.Background(), checkers.DefaultTimeout)
-				res := cs[0].Check(rctx, f.Secret, nil)
+				res := cs[0].Check(rctx, f.Secret, f.Extra)
 				cancel()
 				f.Verified = res.Verified
 				f.Checker = cs[0].Name()
@@ -370,6 +375,12 @@ func scanMassBody(engine *patterns.Engine, dedup *output.ShardedDedup, w *output
 		findings.Add(1)
 		_ = w.Write(f)
 	}
+}
+
+// pairedAWSSecret returns the most plausible 40-char secret key in body that
+// is not the access key itself.
+func pairedAWSSecret(body []byte, accessKey string) string {
+	return patterns.BestSecretCandidate(body, accessKey, patterns.DefaultSecretEntropy)
 }
 
 func loadMassEntries(args []string) ([]massEntry, error) {
