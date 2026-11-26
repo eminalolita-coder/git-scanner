@@ -35,7 +35,11 @@ func (s *sesSMTPChecker) Match(ruleID string, tags []string) bool {
 }
 
 // sesRegions are tried in parallel; the first successful login wins.
-var sesRegions = []string{"us-east-1", "us-west-2", "eu-west-1", "ap-southeast-1", "eu-central-1"}
+var sesRegions = []string{
+	"us-east-1", "us-east-2", "us-west-2", "eu-west-1", "eu-central-1",
+	"eu-north-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+	"ap-south-1", "sa-east-1", "ca-central-1",
+}
 
 func (s *sesSMTPChecker) Check(ctx context.Context, secret string, meta map[string]string) Result {
 	user, pass := SplitSESPair(secret)
