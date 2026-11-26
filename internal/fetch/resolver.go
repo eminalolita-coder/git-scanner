@@ -34,6 +34,17 @@ type entry struct {
 	at  time.Time
 }
 
+// srcAddrs are the loopback source addresses rotated across DNS dials. The
+// kernel routes all of 127.0.0.0/8 to lo, and the ~64k ephemeral port range
+// applies per (address, port) pair, so several addresses multiply the number
+// of concurrent DNS sockets a mass run can hold.
+var srcAddrs = []net.IP{
+	net.ParseIP("127.0.0.1"), net.ParseIP("127.0.0.2"),
+	net.ParseIP("127.0.0.3"), net.ParseIP("127.0.0.4"),
+	net.ParseIP("127.0.0.5"), net.ParseIP("127.0.0.6"),
+	net.ParseIP("127.0.0.7"), net.ParseIP("127.0.0.8"),
+}
+
 // NewResolver builds a resolver bound to the given DNS servers. Empty servers
 // fall back to the system resolvers.
 func NewResolver(servers []string, ttl time.Duration) *Resolver {
@@ -55,11 +66,20 @@ func NewResolver(servers []string, ttl time.Duration) *Resolver {
 	if len(servers) > 0 {
 		r.servers = servers
 		idx := atomic.Int64{}
+		sidx := atomic.Int64{}
 		r.inner = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				srv := servers[int(idx.Add(1)-1)%len(servers)]
 				d := net.Dialer{Timeout: 3 * time.Second}
+				// Spread source sockets over several loopback addresses. The
+				// ephemeral port range (~64k) is per (address, port) pair, so
+				// pointing everything at 127.0.0.1 caps a big run at 64k
+				// sockets and the resolver starts failing with "cannot find
+				// an open port". All of 127.0.0.0/8 is local.
+				if strings.HasPrefix(srv, "127.") {
+					d.LocalAddr = &net.UDPAddr{IP: srcAddrs[int(sidx.Add(1)-1)%len(srcAddrs)]}
+				}
 				return d.DialContext(ctx, "udp", srv)
 			},
 		}
@@ -112,35 +132,42 @@ func (r *Resolver) Lookup(ctx context.Context, host string) (string, error) {
 }
 
 func (r *Resolver) lookupUncached(ctx context.Context, host string) (string, error) {
+	// Look up A first: LookupIPAddr issues an A and an AAAA query in parallel,
+	// which means two sockets and two upstream queries per host. On a mass run
+	// that doubles both the DNS load and the ephemeral ports held (the range is
+	// only 64k). IPv4 covers the vast majority of hosts; IPv6 is a fallback.
 	var lastErr error
-	// one retry: on a large run a transient timeout must not mark a live host
-	// as dead (that host would be cached as dead for the whole TTL)
 	for attempt := 0; attempt < 2; attempt++ {
 		lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		addrs, err := r.inner.LookupIPAddr(lctx, host)
+		ips, err := r.inner.LookupIP(lctx, "ip4", host)
 		cancel()
-		if err == nil {
-			var v6 string
-			for _, a := range addrs {
-				if a.IP.To4() != nil {
-					return a.IP.String(), nil
-				}
-				if v6 == "" {
-					v6 = a.IP.String()
-				}
-			}
-			if v6 != "" {
-				return v6, nil
-			}
-			return "", &net.DNSError{Err: "no address", Name: host}
+		if err == nil && len(ips) > 0 {
+			return ips[0].String(), nil
 		}
-		lastErr = err
-		var dnsErr *net.DNSError
-		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-			return "", err // NXDOMAIN: no point retrying
+		if err != nil {
+			lastErr = err
+			var dnsErr *net.DNSError
+			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+				return "", err // NXDOMAIN: no point retrying
+			}
+			continue // transient (timeout/SERVFAIL): retry once
 		}
+		break // resolved, but no A record
 	}
-	return "", lastErr
+
+	lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	ips, err := r.inner.LookupIP(lctx, "ip6", host)
+	if err == nil && len(ips) > 0 {
+		return ips[0].String(), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", &net.DNSError{Err: "no address", Name: host}
 }
 
 // PreResolve resolves many hosts with a worker pool, warming the cache.
