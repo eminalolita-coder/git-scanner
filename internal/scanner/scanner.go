@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -283,6 +284,12 @@ func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte
 					}
 					f.Extra["ses_password"] = pass
 				}
+			}
+			if m.Pattern.ID == "gcp-service-account" && json.Valid(content) {
+				if f.Extra == nil {
+					f.Extra = map[string]string{}
+				}
+				f.Extra["json"] = string(content)
 			}
 			s.emit(f)
 		}

@@ -172,17 +172,79 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 			fmt.Fprintf(out, "profile=%s concurrency=%d timeout=%ds body=%dKB method=%s gogc=%d cpu=%d\n",
 				profile, concurrency, timeoutSec, maxBodyKB, method, gogc, runtime.NumCPU())
 
-			fmt.Fprintf(out, "resolving/loading %d hosts...\n", len(entries))
-			res.PreResolve(ctx, hostList(entries), min(concurrency, 1000))
-			hits, lookups, derr := res.Stats()
-			fmt.Fprintf(out, "dns: cache=%d lookups=%d errors=%d\n", hits, lookups, derr)
-
 			if resolveOnly {
-				for _, e := range entries {
-					ip, _ := res.Lookup(ctx, e.host)
-					fmt.Fprintf(out, "%s %s\n", e.host, ip)
+				// Pre-filter: resolve every host in parallel and print only the
+				// live ones as "host ip", directly usable as a target list.
+				workers := min(concurrency, 32000)
+				if workers < 64 {
+					workers = 64
 				}
+				fmt.Fprintf(out, "# resolving %d hosts with %d workers\n", len(entries), workers)
+				bw := bufio.NewWriterSize(out, 1<<20)
+				defer bw.Flush()
+				jobs := make(chan massEntry, workers*2)
+				var wg sync.WaitGroup
+				var mu sync.Mutex
+				var live, dead atomic.Int64
+				for i := 0; i < workers; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						for e := range jobs {
+							ip, err := res.Lookup(ctx, e.host)
+							if err != nil || ip == "" {
+								dead.Add(1)
+								continue
+							}
+							live.Add(1)
+							mu.Lock()
+							fmt.Fprintf(bw, "%s %s\n", e.host, ip)
+							mu.Unlock()
+						}
+					}()
+				}
+				done := make(chan struct{})
+				go func() {
+					t := time.NewTicker(time.Duration(progressSec) * time.Second)
+					defer t.Stop()
+					for {
+						select {
+						case <-done:
+							return
+						case <-t.C:
+							fmt.Fprintf(os.Stderr, "[resolve] live=%d dead=%d\n", live.Load(), dead.Load())
+						}
+					}
+				}()
+				for _, e := range entries {
+					select {
+					case jobs <- e:
+					case <-ctx.Done():
+						close(jobs)
+						wg.Wait()
+						close(done)
+						return nil
+					}
+				}
+				close(jobs)
+				wg.Wait()
+				close(done)
+				_ = bw.Flush()
+				fmt.Fprintf(out, "# resolve: %d live, %d dead\n", live.Load(), dead.Load())
 				return nil
+			}
+
+			fmt.Fprintf(out, "resolving/loading %d hosts...\n", len(entries))
+			// Pre-resolving walks the whole list before any request is issued.
+			// On tens of millions of hosts that serialises the entire DNS pass
+			// (a hard ~1.5k/s here) ahead of the HTTP work; resolving on demand
+			// instead overlaps the two.
+			if len(entries) <= 5_000_000 {
+				res.PreResolve(ctx, hostList(entries), min(concurrency, 1000))
+				hits, lookups, derr := res.Stats()
+				fmt.Fprintf(out, "dns: cache=%d lookups=%d errors=%d\n", hits, lookups, derr)
+			} else {
+				fmt.Fprintf(out, "dns: on-demand (list too large to pre-resolve)\n")
 			}
 
 			writer, err := output.New(cfg.Output.Directory, cfg.Output.Format)

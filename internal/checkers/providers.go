@@ -289,7 +289,7 @@ func init() {
 
 	// Google API key
 	Register(&httpChecker{
-		name: "gcp", tags: tagsOf("gcp"),
+		name: "gcp", tags: nil,
 		ruleIDs: tags0("gcp-api-key"),
 		fn: func(ctx context.Context, secret string) Result {
 			code, body, err := getBody(ctx, "https://www.googleapis.com/discovery/v1/apis?key="+secret, nil)

@@ -6,6 +6,7 @@ package fetch
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -24,6 +25,7 @@ type Resolver struct {
 	misses  atomic.Int64
 	errors  atomic.Int64
 	lookupf func(ctx context.Context, host string) (string, error)
+	servers []string // normalized "host:port" DNS servers
 }
 
 type entry struct {
@@ -42,7 +44,16 @@ func NewResolver(servers []string, ttl time.Duration) *Resolver {
 	if len(servers) == 0 {
 		servers = systemResolvers()
 	}
+	// accept both "1.1.1.1" and "1.1.1.1:5353"
+	for i, s := range servers {
+		s = strings.TrimSpace(s)
+		if _, _, err := net.SplitHostPort(s); err != nil {
+			s = net.JoinHostPort(s, "53")
+		}
+		servers[i] = s
+	}
 	if len(servers) > 0 {
+		r.servers = servers
 		idx := atomic.Int64{}
 		r.inner = &net.Resolver{
 			PreferGo: true,
@@ -101,25 +112,35 @@ func (r *Resolver) Lookup(ctx context.Context, host string) (string, error) {
 }
 
 func (r *Resolver) lookupUncached(ctx context.Context, host string) (string, error) {
-	lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	defer cancel()
-	addrs, err := r.inner.LookupIPAddr(lctx, host)
-	if err != nil {
-		return "", err
-	}
-	var v6 string
-	for _, a := range addrs {
-		if a.IP.To4() != nil {
-			return a.IP.String(), nil
+	var lastErr error
+	// one retry: on a large run a transient timeout must not mark a live host
+	// as dead (that host would be cached as dead for the whole TTL)
+	for attempt := 0; attempt < 2; attempt++ {
+		lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		addrs, err := r.inner.LookupIPAddr(lctx, host)
+		cancel()
+		if err == nil {
+			var v6 string
+			for _, a := range addrs {
+				if a.IP.To4() != nil {
+					return a.IP.String(), nil
+				}
+				if v6 == "" {
+					v6 = a.IP.String()
+				}
+			}
+			if v6 != "" {
+				return v6, nil
+			}
+			return "", &net.DNSError{Err: "no address", Name: host}
 		}
-		if v6 == "" {
-			v6 = a.IP.String()
+		lastErr = err
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return "", err // NXDOMAIN: no point retrying
 		}
 	}
-	if v6 != "" {
-		return v6, nil
-	}
-	return "", &net.DNSError{Err: "no address", Name: host}
+	return "", lastErr
 }
 
 // PreResolve resolves many hosts with a worker pool, warming the cache.
