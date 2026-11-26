@@ -28,6 +28,7 @@ DIR=${DIR:-gs}
 CONCURRENCY=${CONCURRENCY:-4000}
 RATE=${RATE:-3000}
 TIMEOUT=${TIMEOUT:-6}
+OUT=${OUT:-hits}
 SSH_OPTS=${SSH_OPTS:-}
 
 cd "$(dirname "$0")/.." || exit 1
@@ -59,16 +60,16 @@ deploy)
 
   echo "== start"
   NAME=$(basename "$TARGETS")
-  ssh_run "cd '$DIR' && TARGETS='lists/$NAME' OUT=hits BIN='bin/git-scanner' SKIP_BUILD=1 \
-    CONCURRENCY=$CONCURRENCY RATE=$RATE TIMEOUT=$TIMEOUT \
+  ssh_run "cd '$DIR' && TARGETS='lists/$NAME' OUT='$OUT' BIN='bin/git-scanner' SKIP_BUILD=1 \
+    CONCURRENCY=$CONCURRENCY RATE=$RATE TIMEOUT=$TIMEOUT EXTRA='${EXTRA:-}' PATHS='${PATHS:-/}' \
     setsid nohup ./scripts/mass-resilient.sh > run.log 2>&1 < /dev/null & sleep 1; echo started"
   echo
   echo "follow with: VPS=$VPS ./scripts/vps.sh status"
   ;;
 start)
   NAME=${2:-$(ssh_run "ls '$DIR/lists' | head -1" | tr -d '\r')}
-  ssh_run "cd '$DIR' && TARGETS='lists/$NAME' OUT=hits BIN='bin/git-scanner' SKIP_BUILD=1 \
-    CONCURRENCY=$CONCURRENCY RATE=$RATE TIMEOUT=$TIMEOUT \
+  ssh_run "cd '$DIR' && TARGETS='lists/$NAME' OUT='$OUT' BIN='bin/git-scanner' SKIP_BUILD=1 \
+    CONCURRENCY=$CONCURRENCY RATE=$RATE TIMEOUT=$TIMEOUT EXTRA='${EXTRA:-}' PATHS='${PATHS:-/}' \
     setsid nohup ./scripts/mass-resilient.sh > run.log 2>&1 < /dev/null & sleep 1; echo started $NAME"
   ;;
 status)
@@ -91,6 +92,7 @@ fetch)
   ls -la "$LOCAL" | tail -5
   ;;
 tune)
+  ssh_run "mkdir -p '$DIR/scripts'"
   scp -P "$PORT" $SSH_OPTS -q scripts/tune-linux.sh "$VPS:$DIR/scripts/"
   ssh_run "sudo bash '$DIR/scripts/tune-linux.sh' 2>/dev/null || bash '$DIR/scripts/tune-linux.sh'"
   ;;

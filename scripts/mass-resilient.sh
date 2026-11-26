@@ -20,6 +20,7 @@
 #   MIN_CONC     concurrency floor              (default 250)
 #   BIN          scanner binary                 (default ./git-scanner)
 #   SKIP_BUILD   1 = never run go build         (default 0)
+#   EXTRA        extra mass flags               (default empty)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -37,6 +38,7 @@ BACKOFF=${BACKOFF:-30}
 MIN_CONC=${MIN_CONC:-250}
 BIN=${BIN:-./git-scanner}
 SKIP_BUILD=${SKIP_BUILD:-0}
+EXTRA=${EXTRA:-}
 
 [ -f "$TARGETS" ] || { echo "missing targets file: $TARGETS"; exit 1; }
 ulimit -n 1048576 2>/dev/null || true
@@ -64,7 +66,7 @@ while :; do
   "$BIN" mass "$TARGETS" \
     --checkpoint "$CKPT" --paths "$PATHS" --scheme "$SCHEME" --timeout "$TIMEOUT" \
     --concurrency "$conc" --rate "$rate" --stall-exit "$STALL" \
-    -o "$OUT" --format jsonl
+    -o "$OUT" --format jsonl $EXTRA
   rc=$?
 
   if [ "$rc" -eq 0 ]; then
