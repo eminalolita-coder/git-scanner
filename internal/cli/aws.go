@@ -19,6 +19,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 		deep         bool
 		chain        bool
 		envVars      bool
+		ses          bool
 		externalID   string
 		depth        int
 		asJSON       bool
@@ -39,11 +40,33 @@ func newAWSCmd(opts *Options) *cobra.Command {
 			out := cmd.OutOrStdout()
 			ctx := cmd.Context()
 
-			id, err := aws.GetCallerIdentity(ctx, nil, creds)
-			if err != nil {
-				return err
+			id, idErr := aws.GetCallerIdentity(ctx, nil, creds)
+			if idErr != nil && !ses {
+				return idErr
 			}
-			fmt.Fprintf(out, "identity: %s\naccount : %s\nuser id : %s\n", id.ARN, id.Account, id.UserID)
+			if idErr == nil {
+				fmt.Fprintf(out, "identity: %s\naccount : %s\nuser id : %s\n", id.ARN, id.Account, id.UserID)
+			} else {
+				fmt.Fprintf(out, "identity: %v\n", idErr)
+			}
+
+			if ses {
+				// Independent of STS: a key can be denied sts:GetCallerIdentity
+				// (or the call can be blocked) and still reach SES.
+				acc, err := aws.SESAccountInfo(ctx, nil, creds, region)
+				if err != nil {
+					fmt.Fprintf(out, "\nSES: %v\n", err)
+				} else {
+					fmt.Fprintf(out, "\nSES (%s): sending=%v sandbox=%v quota=%.0f/24h rate=%.1f/s sent=%.0f\n",
+						acc.Region, acc.SendingEnabled, acc.Sandbox, acc.Max24HourSend, acc.MaxSendRate, acc.SentLast24Hours)
+					if len(acc.Identities) > 0 {
+						fmt.Fprintf(out, "verified identities (%d):\n", len(acc.Identities))
+						for _, i := range acc.Identities {
+							fmt.Fprintf(out, "  %s\n", i)
+						}
+					}
+				}
+			}
 
 			if enumerate {
 				if buckets, err := aws.ListBuckets(ctx, nil, creds); err == nil {
@@ -103,6 +126,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 	f.BoolVar(&deep, "deep", false, "full multi-service enumeration")
 	f.BoolVar(&chain, "chain", false, "walk assume-role chains")
 	f.BoolVar(&envVars, "env", false, "extract Lambda and ECS environment variables")
+	f.BoolVar(&ses, "ses", false, "check SES access (sending status, quota, identities)")
 	f.StringVar(&externalID, "external-id", "", "external id for AssumeRole")
 	f.IntVar(&depth, "depth", 2, "max assume-role chain depth")
 	f.StringVar(&filter, "filter", "", "regex filter on role name/arn")

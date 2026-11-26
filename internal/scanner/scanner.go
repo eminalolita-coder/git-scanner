@@ -276,6 +276,14 @@ func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte
 					f.Extra = map[string]string{"secret": sec}
 				}
 			}
+			if m.Pattern.ID == "aws-ses-smtp-username" {
+				if pass := patterns.BestSESPassword(blob, m.Secret, patterns.DefaultSecretEntropy); pass != "" {
+					if f.Extra == nil {
+						f.Extra = map[string]string{}
+					}
+					f.Extra["ses_password"] = pass
+				}
+			}
 			s.emit(f)
 		}
 	}

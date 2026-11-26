@@ -6,6 +6,30 @@ import "regexp"
 // character class covers base64 as used by AWS secret access keys.
 var reSecretCandidate = regexp.MustCompile(`\b([A-Za-z0-9/+=]{40})\b`)
 
+// reSESPassword matches a 44-character token that starts with an alphanumeric
+// and ends with base64 padding. Starting on an alphanumeric matters: in
+// "SMTP_PASSWORD=abc…=" the "=" of the assignment is itself a word boundary,
+// so a naive pattern would capture it as part of the password.
+var reSESPassword = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Za-z0-9][A-Za-z0-9/+=]{43})(?:[^A-Za-z0-9]|$)`)
+
+// BestSESPassword returns the highest-entropy 44-char token in content,
+// excluding the given value, provided its entropy is at least minEntropy. It
+// pairs an SES SMTP username (an IAM access key id) with its password.
+func BestSESPassword(content []byte, exclude string, minEntropy float64) string {
+	best := ""
+	bestEnt := minEntropy
+	for _, m := range reSESPassword.FindAllStringSubmatch(string(content), 40) {
+		c := m[1]
+		if c == exclude || looksLikeLabel(c) {
+			continue
+		}
+		if e := Shannon(c); e > bestEnt {
+			best, bestEnt = c, e
+		}
+	}
+	return best
+}
+
 // BestSecretCandidate returns the highest-entropy 40-char token in content,
 // excluding the given value, provided its entropy is at least minEntropy.
 // It is a heuristic to pair an AWS access key id with a nearby secret key.

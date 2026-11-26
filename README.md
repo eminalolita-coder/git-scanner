@@ -15,7 +15,7 @@ archives — and can verify each hit against the provider's API.
   files, directories, or a `.txt` list of targets.
 - **History-aware git scanning** — clones a repository and walks the worktree
   *and* commit history, extracting blobs with author/date provenance.
-- **~60 built-in rules** — AWS, GitHub/GitLab/Bitbucket, Stripe, Square,
+- **~120 built-in rules** — AWS, GitHub/GitLab/Bitbucket, Stripe, Square,
   Shopify, SendGrid, Mailgun, Mailchimp, Slack, Discord, Twilio, Telegram,
   OpenAI/Anthropic/xAI, DigitalOcean, GCP, Vercel, New Relic, Grafana, private
   keys, JWTs and DB/AMQP connection strings.
@@ -23,13 +23,18 @@ archives — and can verify each hit against the provider's API.
   `~/.git-credentials`, S3 bucket hostnames, S3 presigned URLs.
 - **Verification** — live checks against provider APIs (GitHub, GitLab, Slack,
   Stripe, SendGrid, OpenAI, Anthropic, Google API keys, Firebase,
-  DigitalOcean, Telegram, Discord, Vercel, Mailgun, New Relic, SMTP); keys that
-  exist but are restricted (HTTP 403) are reported as verified+restricted.
+  DigitalOcean, Telegram, Discord, Vercel, Mailgun, New Relic, SMTP, AWS
+  STS/SigV4 and SES); keys that exist but are restricted (HTTP 403) are
+  reported as verified+restricted.
+- **AWS SES** — SES SMTP credentials (access key id + 44-char password, in
+  pair or `.env` form) are verified by SMTP AUTH against the regional
+  `email-smtp` endpoint, independently of STS; `aws --ses` reports sending
+  status, sandbox flag, quota and verified identities for an IAM key.
 - **Obfuscation handling** — base64, hex and percent-decoding, binary string
   extraction, archive walking.
-- **Verification** — live checks against provider APIs (GitHub, GitLab, Slack,
-  Stripe, SendGrid, OpenAI, Anthropic, DigitalOcean, Telegram, Discord, Vercel,
-  Mailgun, New Relic, SMTP) to separate real secrets from noise.
+- **Proxy and offload** — `--proxy` (URL or `host:port:user:pass`) or a proxy
+  pool file for HTTP, checkers and git clones; `scripts/vps.sh` deploys the
+  scan to a datacenter box so the local link only carries SSH.
 - **Custom rules** — supply extra regex patterns as a JSON file.
 - **Outputs** — `jsonl`, `csv` or `txt`, with a built-in de-duplicator.
 - **Notifications** — verified findings are pushed to Telegram and/or Discord.

@@ -87,6 +87,30 @@ func extractedRules() []Pattern {
 			SecretGroup: 1, Keywords: []string{"akia", "asia"}, Tags: []string{"aws"},
 		},
 		{
+			// SES SMTP usernames are IAM access key ids and the passwords are
+			// 44 base64 chars. This pair form appears in .env and JSON configs.
+			// Tags deliberately omit "smtp": the generic SMTP checker matches on
+			// that tag and would treat these as user:pass@host credentials.
+			ID: "aws-ses-smtp-credential", Description: "AWS SES SMTP credential (access key + password)",
+			Regex:       `(?:^|[^\w])((?:AKIA|ASIA)[A-Z0-9]{16}[\s"';:=,]{1,12}[A-Za-z0-9/+=]{44})(?:[^\w]|$)`,
+			SecretGroup: 1, Keywords: []string{"akia", "asia"}, Tags: []string{"aws", "ses"},
+		},
+		{
+			ID: "aws-ses-smtp-username", Description: "AWS SES SMTP username",
+			Regex:       `(?i)(?:smtp|ses)[a-z_]{0,24}(?:user|username|userid|login)["'\s:=]{1,6}((?:AKIA|ASIA)[A-Z0-9]{16})`,
+			SecretGroup: 1, Keywords: []string{"smtp", "ses_"}, Tags: []string{"aws", "ses"},
+		},
+		{
+			ID: "aws-ses-smtp-password", Description: "AWS SES SMTP password (context)",
+			Regex:       `(?i)(?:smtp|ses)[a-z_]{0,24}(?:pass|password|secret)["'\s:=]{1,6}([A-Za-z0-9/+=]{44})`,
+			SecretGroup: 1, Keywords: []string{"smtp", "ses_"}, Tags: []string{"aws", "ses"},
+		},
+		{
+			ID: "aws-ses-smtp-endpoint", Description: "AWS SES SMTP endpoint",
+			Regex:       `(?i)\b(email-smtp\.[a-z0-9-]+\.amazonaws\.com)\b`,
+			SecretGroup: 1, Keywords: []string{"email-smtp"}, Tags: []string{"aws", "ses"},
+		},
+		{
 			ID: "aws-arn-role", Description: "AWS IAM role ARN",
 			Regex:    `arn:aws:iam::\d{12}:role/[\w+=,.@/\-]+`,
 			Keywords: []string{"arn:aws:iam"}, Tags: []string{"aws"},
