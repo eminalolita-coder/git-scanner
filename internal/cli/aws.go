@@ -4,11 +4,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/eminalolita-coder/git-scanner/internal/aws"
+	"github.com/eminalolita-coder/git-scanner/internal/proxy"
 )
+
+// awsHTTPClient builds the HTTP client used for AWS API calls. It honours
+// --proxy / proxy config: a host's route to AWS can be partly broken (only
+// some prefixes reachable), and the API calls then need another egress.
+func awsHTTPClient(opts *Options) *http.Client {
+	client := &http.Client{Timeout: 30 * time.Second}
+	cfg, err := loadConfig(opts)
+	if err != nil {
+		return client
+	}
+	pm, err := proxy.New(cfg.Proxy)
+	if err != nil || !pm.Enabled() {
+		return client
+	}
+	client.Transport = &http.Transport{
+		Proxy:               pm.ProxyFunc(),
+		MaxIdleConnsPerHost: 8,
+		ForceAttemptHTTP2:   true,
+	}
+	return client
+}
 
 func newAWSCmd(opts *Options) *cobra.Command {
 	var (
@@ -40,7 +64,11 @@ func newAWSCmd(opts *Options) *cobra.Command {
 			out := cmd.OutOrStdout()
 			ctx := cmd.Context()
 
-			id, idErr := aws.GetCallerIdentity(ctx, nil, creds)
+			// A VPS route to AWS can be partly broken; honour --proxy so the
+			// API calls can go out through a reachable path.
+			client := awsHTTPClient(opts)
+
+			id, idErr := aws.GetCallerIdentity(ctx, client, creds)
 			if idErr != nil && !ses {
 				return idErr
 			}
@@ -53,7 +81,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 			if ses {
 				// Independent of STS: a key can be denied sts:GetCallerIdentity
 				// (or the call can be blocked) and still reach SES.
-				acc, err := aws.SESAccountInfo(ctx, nil, creds, region)
+				acc, err := aws.SESAccountInfo(ctx, client, creds, region)
 				if err != nil {
 					fmt.Fprintf(out, "\nSES: %v\n", err)
 				} else {
@@ -69,7 +97,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 			}
 
 			if enumerate {
-				if buckets, err := aws.ListBuckets(ctx, nil, creds); err == nil {
+				if buckets, err := aws.ListBuckets(ctx, client, creds); err == nil {
 					fmt.Fprintf(out, "\nS3 buckets (%d):\n", len(buckets))
 					for _, b := range buckets {
 						fmt.Fprintf(out, "  %s\n", b.Name)
@@ -77,7 +105,7 @@ func newAWSCmd(opts *Options) *cobra.Command {
 				} else {
 					fmt.Fprintf(out, "\nS3: %v\n", err)
 				}
-				if users, err := aws.ListIAMUsers(ctx, nil, creds); err == nil {
+				if users, err := aws.ListIAMUsers(ctx, client, creds); err == nil {
 					fmt.Fprintf(out, "\nIAM users (%d):\n", len(users))
 					for _, u := range users {
 						fmt.Fprintf(out, "  %s\n", u.ARN)
@@ -87,19 +115,19 @@ func newAWSCmd(opts *Options) *cobra.Command {
 
 			if deep {
 				regions := []string{region}
-				res := aws.Enumerate(ctx, nil, creds, regions)
+				res := aws.Enumerate(ctx, client, creds, regions)
 				printEnum(out, res, asJSON)
 			}
 
 			if envVars {
-				lambdas := aws.ListLambdaEnvironments(ctx, nil, creds, 25)
-				ecs := aws.ListECSEnvironments(ctx, nil, creds, 25)
+				lambdas := aws.ListLambdaEnvironments(ctx, client, creds, 25)
+				ecs := aws.ListECSEnvironments(ctx, client, creds, 25)
 				printEnvs(out, lambdas, ecs, asJSON)
 			}
 
 			if chain {
-				roles := aws.ListRolesForChain(ctx, nil, creds)
-				links := aws.AssumeChains(ctx, nil, creds, roles, aws.ChainOptions{
+				roles := aws.ListRolesForChain(ctx, client, creds)
+				links := aws.AssumeChains(ctx, client, creds, roles, aws.ChainOptions{
 					MaxDepth: depth, ExternalID: externalID, Duration: 3600, Match: filter,
 				})
 				ok, ko := 0, 0
