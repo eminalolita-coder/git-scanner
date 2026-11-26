@@ -1,24 +1,29 @@
 #!/usr/bin/env bash
-# backup.sh - snapshot every scan result (local + VPS) into a timestamped
-# folder under BASE/backups. Run it after each pass; nothing is overwritten.
+# backup.sh - snapshot every scan result into a timestamped folder.
 #
 # Env:
-#   BASE        root directory (default: this script's parent)
-#   BACKUP_DIR  destination root (default: $BASE/backups)
+#   BASE        directory holding the hits-* results (auto-detected)
+#   BACKUP_DIR  destination root (default: $HOME/gs-backups, never inside the repo)
 #   VPS         user@host to pull from (default: empty = local only)
 #   PORT        ssh port (default: 22)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE=${BASE:-"$(cd "$SCRIPT_DIR/.." && pwd)"}
-# results must never land inside the repo (secret scanning blocks the push)
+
+# Results usually live next to the repo (local) or inside it (VPS).
+if ! ls -d "$BASE"/hits* >/dev/null 2>&1; then
+  if ls -d "$BASE"/../hits* >/dev/null 2>&1; then
+    BASE="$(cd "$BASE/.." && pwd)"
+  fi
+fi
 BACKUP_DIR=${BACKUP_DIR:-"$HOME/gs-backups"}
-BACKUP_DIR=${BACKUP_DIR:-"$BASE/backups"}
+
 TS=$(date +%Y%m%d-%H%M%S)
 DEST="$BACKUP_DIR/$TS"
 mkdir -p "$DEST"
 
-echo "=== backup -> $DEST ==="
+echo "=== backup (BASE=$BASE) -> $DEST ==="
 
 for d in hits hits-200k hits-cible hits-cible2 hits-git hits-git2 hits-forge hits-forge2 \
          hits-all hits-fresh hits-fresh2 hits-live hits-phase2 hits-verify hits-reverify \
@@ -30,12 +35,12 @@ for d in hits hits-200k hits-cible hits-cible2 hits-git hits-git2 hits-forge hit
   cp -a "$src/." "$DEST/$d/" 2>/dev/null
 done
 
-# lists and checkpoints from the local WSL home (if present)
 for f in fresh200k.txt live_hosts.txt t40.txt public_buckets.txt git_hosts.txt \
          buckets_live.txt sample_100000.txt; do
+  [ -f "$BASE/$f" ] && cp "$BASE/$f" "$DEST/" 2>/dev/null
   [ -f "$HOME/$f" ] && cp "$HOME/$f" "$DEST/" 2>/dev/null
 done
-for ck in "$HOME"/*.ckpt; do
+for ck in "$BASE"/*.ckpt "$HOME"/*.ckpt; do
   [ -f "$ck" ] || continue
   cp "$ck" "$DEST/" 2>/dev/null
 done
