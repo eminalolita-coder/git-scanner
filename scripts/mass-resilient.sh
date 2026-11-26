@@ -18,6 +18,8 @@
 #   MAX_RETRIES  attempts                       (default 50)
 #   BACKOFF      seconds between attempts       (default 30)
 #   MIN_CONC     concurrency floor              (default 250)
+#   BIN          scanner binary                 (default ./git-scanner)
+#   SKIP_BUILD   1 = never run go build         (default 0)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -33,11 +35,16 @@ STALL=${STALL:-90}
 MAX_RETRIES=${MAX_RETRIES:-50}
 BACKOFF=${BACKOFF:-30}
 MIN_CONC=${MIN_CONC:-250}
+BIN=${BIN:-./git-scanner}
+SKIP_BUILD=${SKIP_BUILD:-0}
 
 [ -f "$TARGETS" ] || { echo "missing targets file: $TARGETS"; exit 1; }
 ulimit -n 1048576 2>/dev/null || true
 
-go build -ldflags "-s -w" -o git-scanner ./cmd/git-scanner || exit 1
+if [ "$SKIP_BUILD" != "1" ]; then
+  go build -ldflags "-s -w" -o "$BIN" ./cmd/git-scanner || exit 1
+fi
+[ -x "$BIN" ] || { echo "missing binary: $BIN (set BIN= or build it)"; exit 1; }
 
 conc=$CONCURRENCY
 rate=$RATE
@@ -54,7 +61,7 @@ while :; do
   echo "=== attempt $attempt | remaining=$left concurrency=$conc rate=$rate stall=${STALL}s ==="
   if [ "$left" -eq 0 ]; then echo "all targets scanned"; break; fi
 
-  ./git-scanner mass "$TARGETS" \
+  "$BIN" mass "$TARGETS" \
     --checkpoint "$CKPT" --paths "$PATHS" --scheme "$SCHEME" --timeout "$TIMEOUT" \
     --concurrency "$conc" --rate "$rate" --stall-exit "$STALL" \
     -o "$OUT" --format jsonl

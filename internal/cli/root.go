@@ -18,6 +18,7 @@ type Options struct {
 	NoColor    bool
 	Threads    int
 	Timeout    int
+	Proxy      string
 }
 
 // Execute runs the root command.
@@ -59,6 +60,7 @@ listing one target per line.`,
 	pf.BoolVar(&opts.NoColor, "no-color", false, "disable colored output")
 	pf.IntVarP(&opts.Threads, "threads", "t", 0, "concurrency (0 = config default)")
 	pf.IntVar(&opts.Timeout, "timeout", 0, "per-request timeout in seconds")
+	pf.StringVar(&opts.Proxy, "proxy", "", "outbound proxy: URL or host:port:user:pass (repeatable via a file with proxy.file)")
 
 	root.AddCommand(
 		newScanCmd(opts),

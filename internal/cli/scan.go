@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -101,7 +103,31 @@ func loadConfig(opts *Options) (*config.Config, error) {
 	if opts.Timeout > 0 {
 		cfg.Performance.TimeoutSeconds = opts.Timeout
 	}
+	if opts.Proxy != "" {
+		cfg.Proxy.Enabled = true
+		cfg.Proxy.URL = normalizeProxy(opts.Proxy)
+		if cfg.Proxy.Protocol == "" {
+			cfg.Proxy.Protocol = "http"
+		}
+	}
 	return cfg, nil
+}
+
+// normalizeProxy accepts either a proxy URL or the "host:port:user:pass" form
+// used by proxy providers, and returns a URL.
+func normalizeProxy(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "://") {
+		return raw
+	}
+	parts := strings.SplitN(raw, ":", 4)
+	switch len(parts) {
+	case 4:
+		return fmt.Sprintf("http://%s:%s@%s:%s", parts[2], parts[3], parts[0], parts[1])
+	case 2:
+		return fmt.Sprintf("http://%s:%s", parts[0], parts[1])
+	}
+	return raw
 }
 
 func buildEngine(cfg *config.Config, extra string) (*patterns.Engine, error) {
