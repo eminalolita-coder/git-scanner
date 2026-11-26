@@ -48,25 +48,23 @@ func AssumeRole(ctx context.Context, client *http.Client, base Credentials, role
 		return AssumeRoleResult{}, err
 	}
 	var out struct {
-		AssumeRoleResponse struct {
-			Result struct {
-				Credentials struct {
-					AccessKeyId     string `xml:"AccessKeyId"`
-					SecretAccessKey string `xml:"SecretAccessKey"`
-					SessionToken    string `xml:"SessionToken"`
-					Expiration      string `xml:"Expiration"`
-				} `xml:"Credentials"`
-				AssumedRoleUser struct {
-					Arn string `xml:"Arn"`
-					ID  string `xml:"AssumedRoleId"`
-				} `xml:"AssumedRoleUser"`
-			} `xml:"AssumeRoleResult"`
-		} `xml:"AssumeRoleResponse"`
+		Result struct {
+			Credentials struct {
+				AccessKeyId     string `xml:"AccessKeyId"`
+				SecretAccessKey string `xml:"SecretAccessKey"`
+				SessionToken    string `xml:"SessionToken"`
+				Expiration      string `xml:"Expiration"`
+			} `xml:"Credentials"`
+			AssumedRoleUser struct {
+				Arn string `xml:"Arn"`
+				ID  string `xml:"AssumedRoleId"`
+			} `xml:"AssumedRoleUser"`
+		} `xml:"AssumeRoleResult"`
 	}
 	if err := xml.Unmarshal(body, &out); err != nil {
 		return AssumeRoleResult{}, err
 	}
-	r := out.AssumeRoleResponse.Result
+	r := out.Result
 	exp, _ := time.Parse(time.RFC3339, r.Credentials.Expiration)
 	return AssumeRoleResult{
 		Credentials: AssumedCredentials{
@@ -93,21 +91,19 @@ func GetSessionToken(ctx context.Context, client *http.Client, base Credentials,
 		return AssumedCredentials{}, err
 	}
 	var out struct {
-		GetSessionTokenResponse struct {
-			Result struct {
-				Credentials struct {
-					AccessKeyId     string `xml:"AccessKeyId"`
-					SecretAccessKey string `xml:"SecretAccessKey"`
-					SessionToken    string `xml:"SessionToken"`
-					Expiration      string `xml:"Expiration"`
-				} `xml:"Credentials"`
-			} `xml:"GetSessionTokenResult"`
-		} `xml:"GetSessionTokenResponse"`
+		Result struct {
+			Credentials struct {
+				AccessKeyId     string `xml:"AccessKeyId"`
+				SecretAccessKey string `xml:"SecretAccessKey"`
+				SessionToken    string `xml:"SessionToken"`
+				Expiration      string `xml:"Expiration"`
+			} `xml:"Credentials"`
+		} `xml:"GetSessionTokenResult"`
 	}
 	if err := xml.Unmarshal(body, &out); err != nil {
 		return AssumedCredentials{}, err
 	}
-	r := out.GetSessionTokenResponse.Result.Credentials
+	r := out.Result.Credentials
 	exp, _ := time.Parse(time.RFC3339, r.Expiration)
 	return AssumedCredentials{r.AccessKeyId, r.SecretAccessKey, r.SessionToken, exp}, nil
 }

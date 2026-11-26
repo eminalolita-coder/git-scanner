@@ -62,18 +62,34 @@ func GetCallerIdentity(ctx context.Context, client *http.Client, c Credentials) 
 	if resp.StatusCode != http.StatusOK {
 		return Identity{}, &APIError{Status: resp.StatusCode, Body: string(body)}
 	}
+	// NOTE: encoding/xml does not match a field whose tag equals the ROOT
+	// element name - it descends into the root's children, so the field must
+	// be tagged with the child element. Getting this wrong yields a silent
+	// zero value with a nil error.
 	var out struct {
-		GetCallerIdentityResponse struct {
-			Result struct {
-				Account string `xml:"Account"`
-				ARN     string `xml:"Arn"`
-				UserID  string `xml:"UserId"`
-			} `xml:"GetCallerIdentityResult"`
-		} `xml:"GetCallerIdentityResponse"`
+		Result struct {
+			Account string `xml:"Account"`
+			ARN     string `xml:"Arn"`
+			UserID  string `xml:"UserId"`
+		} `xml:"GetCallerIdentityResult"`
 	}
 	_ = xml.Unmarshal(body, &out)
-	r := out.GetCallerIdentityResponse.Result
+	r := out.Result
 	return Identity{Account: r.Account, ARN: r.ARN, UserID: r.UserID}, nil
+}
+
+// parseCallerIdentity extracts the identity from a GetCallerIdentity response.
+// Split out so the (subtle) xml shape can be unit tested.
+func parseCallerIdentity(body []byte) Identity {
+	var out struct {
+		Result struct {
+			Account string `xml:"Account"`
+			ARN     string `xml:"Arn"`
+			UserID  string `xml:"UserId"`
+		} `xml:"GetCallerIdentityResult"`
+	}
+	_ = xml.Unmarshal(body, &out)
+	return Identity{Account: out.Result.Account, ARN: out.Result.ARN, UserID: out.Result.UserID}
 }
 
 // Bucket is an S3 bucket entry.
