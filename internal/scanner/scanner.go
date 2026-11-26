@@ -157,12 +157,32 @@ func (s *Scanner) scanTarget(ctx context.Context, t model.Target) error {
 		if t.GitHost == "" {
 			t.GitHost = gitdump.HostFromURL(t.Value)
 		}
-		return cloner.Dump(ctx, t, func(t model.Target, c gitdump.Content) {
+		err := cloner.Dump(ctx, t, func(t model.Target, c gitdump.Content) {
 			s.scanContent(t, model.Location{
 				Source: t.Value, File: c.File, Commit: c.Commit, Branch: c.Branch,
 				Author: c.Author, Email: c.Email, Date: c.Date,
 			}, c.Bytes)
 		})
+		if err == nil {
+			return nil
+		}
+		// Servers exposing .git without smart HTTP (dumb protocol) reject the
+		// clone ("invalid pkt-len"); read the objects directly instead.
+		if base := strings.TrimRight(t.Value, "/"); strings.HasPrefix(base, "http") {
+			items := 0
+			derr := gitdump.DumbScan(ctx, base, nil, gitdump.DefaultDumbOptions(), t,
+				func(_ model.Target, c gitdump.Content) {
+					items++
+					s.scanContent(t, model.Location{
+						Source: t.Value, File: c.File, Commit: c.Commit, Branch: c.Branch,
+						Author: c.Author, Email: c.Email, Date: c.Date,
+					}, c.Bytes)
+				})
+			if derr == nil && items > 0 {
+				return nil
+			}
+		}
+		return err
 	case model.KindDir:
 		return filepath.WalkDir(t.Value, func(p string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {

@@ -91,6 +91,8 @@ func runScanWriter(ctx context.Context, cfg *config.Config, engine *patterns.Eng
 func newDiscoverCmd(opts *Options) *cobra.Command {
 	var concurrency int
 	var scan bool
+	var outputDir, format string
+	var targetTimeout int
 
 	cmd := &cobra.Command{
 		Use:   "discover [hosts...]",
@@ -112,7 +114,7 @@ func newDiscoverCmd(opts *Options) *cobra.Command {
 			var mu sync.Mutex
 			sem := make(chan struct{}, concurrency)
 			var wg sync.WaitGroup
-			found := 0
+			var exposed []string
 
 			for _, h := range hosts {
 				wg.Add(1)
@@ -124,30 +126,56 @@ func newDiscoverCmd(opts *Options) *cobra.Command {
 						code, body := probe(ctx, client, base+"/.git/HEAD")
 						if code == 200 && strings.Contains(string(body), "ref:") {
 							mu.Lock()
-							found++
+							exposed = append(exposed, base)
 							fmt.Fprintf(out, "[git] %s (.git exposed)\n", base)
 							mu.Unlock()
-							if scan {
-								cfg, err := loadConfig(opts)
-								if err == nil {
-									eng, err := buildEngine(cfg, "")
-									if err == nil {
-										runScanStream(ctx, cfg, eng, out, []model.Target{{Kind: model.KindGitRepo, Value: base + "/.git", GitHost: "gitea"}})
-									}
-								}
-							}
 							return
 						}
 					}
 				}(h)
 			}
 			wg.Wait()
-			fmt.Fprintf(out, "\nexposed .git: %d / %d host(s)\n", found, len(hosts))
+			fmt.Fprintf(out, "\nexposed .git: %d / %d host(s)\n", len(exposed), len(hosts))
+
+			if scan && len(exposed) > 0 {
+				gitTargets := make([]model.Target, 0, len(exposed))
+				for _, b := range exposed {
+					gitTargets = append(gitTargets, model.Target{
+						Kind: model.KindGitRepo, Value: b + "/.git", GitHost: "gitea",
+					})
+				}
+				cfg, err := loadConfig(opts)
+				if err != nil {
+					return err
+				}
+				eng, err := buildEngine(cfg, "")
+				if err != nil {
+					return err
+				}
+				tt := time.Duration(targetTimeout) * time.Second
+				if outputDir != "" {
+					if format != "" {
+						cfg.Output.Format = format
+					}
+					w, err := output.New(outputDir, cfg.Output.Format)
+					if err != nil {
+						return err
+					}
+					defer w.Close()
+					fmt.Fprintf(out, "findings -> %s\n", w.Path())
+					runScanWriter(ctx, cfg, eng, w, gitTargets, out, tt)
+				} else {
+					runScanWriter(ctx, cfg, eng, output.NewStream(out), gitTargets, out, tt)
+				}
+			}
 			return nil
 		},
 	}
 	cmd.Flags().IntVarP(&concurrency, "concurrency", "C", 50, "concurrency")
 	cmd.Flags().BoolVar(&scan, "scan", false, "clone and scan discovered repositories")
+	cmd.Flags().StringVarP(&outputDir, "output", "o", "", "write findings of --scan to a directory")
+	cmd.Flags().StringVar(&format, "format", "jsonl", "findings format when -o is used")
+	cmd.Flags().IntVar(&targetTimeout, "target-timeout", 240, "per-repository timeout in seconds")
 	return cmd
 }
 
