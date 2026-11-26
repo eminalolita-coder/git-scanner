@@ -228,23 +228,6 @@ func init() {
 		},
 	})
 
-	// Discord
-	Register(&httpChecker{
-		name: "discord", tags: tagsOf("discord"),
-		fn: func(ctx context.Context, secret string) Result {
-			var r struct {
-				Username string `json:"username"`
-			}
-			code, err := getJSON(ctx, "https://discord.com/api/v10/users/@me", map[string]string{
-				"Authorization": "Bot " + secret,
-			}, &r)
-			if err != nil {
-				return Result{Err: err.Error()}
-			}
-			return Result{Verified: ok(code), Identity: r.Username}
-		},
-	})
-
 	// Vercel
 	Register(&httpChecker{
 		name: "vercel", tags: tagsOf("vercel"),

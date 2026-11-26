@@ -148,11 +148,6 @@ func extractedRules() []Pattern {
 			SecretGroup: 1, Keywords: []string{":"}, Tags: []string{"telegram"},
 		},
 		{
-			ID: "discord-bot-token-strict", Description: "Discord bot token (strict)",
-			Regex:       `(?:^|[^\w])([MN][A-Za-z\d]{23,}\.[A-Za-z\d_-]{6}\.[A-Za-z\d_-]{27,})(?:[^\w]|$)`,
-			SecretGroup: 1, Keywords: []string{"m", "n"}, Tags: []string{"discord"}, Entropy: 3.0,
-		},
-		{
 			ID: "slack-token-strict", Description: "Slack token (strict)",
 			Regex:       `(?:^|[^\w])(xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*|xoxe\.xoxp-[0-9]+-[a-zA-Z0-9-]+|xoxe-[0-9]+-[a-zA-Z0-9-]+)(?:[^\w]|$)`,
 			SecretGroup: 1, Keywords: []string{"xox"}, Tags: []string{"slack"},

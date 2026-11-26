@@ -141,12 +141,6 @@ func humanRules() []Pattern {
 			Keywords: []string{"ac0", "ac1", "ac2", "ac3", "ac4", "ac5", "ac6", "ac7", "ac8", "ac9"},
 			Tags:     []string{"twilio"},
 		},
-		{
-			ID: "discord-webhook", Description: "Discord Webhook URL",
-			Regex:    `(https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[A-Za-z0-9_\-]{60,})`,
-			Keywords: []string{"discord.com/api/webhooks"}, Tags: []string{"discord"},
-		},
-
 		// ---- AI providers ----
 		{
 			ID: "huggingface-token", Description: "HuggingFace Token",

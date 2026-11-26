@@ -54,6 +54,17 @@ if [ -n "${VPS:-}" ]; then
     mkdir -p "$DEST/vps-lot"
     scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
       -r "$VPS:gs/hits-lot/*" "$DEST/vps-lot/" 2>/dev/null && echo "  bloc 56-70M rapatrie"
+    mkdir -p "$DEST/vps-deep" "$DEST/vps-git"
+    scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
+      -r "$VPS:gs/hits-deep/*" "$DEST/vps-deep/" 2>/dev/null && echo "  passe profonde rapatriee"
+    scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
+      -r "$VPS:gs/hits-git-lot/*" "$DEST/vps-git/" 2>/dev/null && echo "  git rapatrie"
+    # root-level checkpoints matter as much as the findings: without them a
+    # lost host means rescanning everything
+    scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
+      "$VPS:gs/*.ckpt" "$DEST/" 2>/dev/null && echo "  checkpoints (racine) rapatries"
+    scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
+      "$VPS:gs/*.txt" "$DEST/" 2>/dev/null && echo "  listes (racine) rapatriees"
     scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
       "$VPS:gs/run.log" "$DEST/vps-run.log" 2>/dev/null && echo "  run.log rapatrie"
     scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
