@@ -11,6 +11,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE=${BASE:-"$(cd "$SCRIPT_DIR/.." && pwd)"}
+# results must never land inside the repo (secret scanning blocks the push)
+BACKUP_DIR=${BACKUP_DIR:-"$HOME/gs-backups"}
 BACKUP_DIR=${BACKUP_DIR:-"$BASE/backups"}
 TS=$(date +%Y%m%d-%H%M%S)
 DEST="$BACKUP_DIR/$TS"

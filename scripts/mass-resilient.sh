@@ -54,7 +54,7 @@ attempt=0
 
 remaining() {
   if [ ! -f "$CKPT" ]; then wc -l < "$TARGETS"; return; fi
-  comm -23 <(sort -u "$TARGETS") <(sort -u "$CKPT") | wc -l
+  comm -23 <(sort -u "$TARGETS" | tr -d '\r') <(sort -u "$CKPT" | tr -d '\r') | wc -l
 }
 
 while :; do
