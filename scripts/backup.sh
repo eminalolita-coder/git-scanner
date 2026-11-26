@@ -51,6 +51,9 @@ if [ -n "${VPS:-}" ]; then
     mkdir -p "$DEST/vps-vague1"
     scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
       -r "$VPS:gs/hits-vague1/*" "$DEST/vps-vague1/" 2>/dev/null && echo "  vague1 rapatriee"
+    mkdir -p "$DEST/vps-lot"
+    scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
+      -r "$VPS:gs/hits-lot/*" "$DEST/vps-lot/" 2>/dev/null && echo "  bloc 56-70M rapatrie"
     scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
       "$VPS:gs/run.log" "$DEST/vps-run.log" 2>/dev/null && echo "  run.log rapatrie"
     scp -P "${PORT:-22}" -o ConnectTimeout=10 -o StrictHostKeyChecking=no -q \
