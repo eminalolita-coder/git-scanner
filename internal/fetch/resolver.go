@@ -6,7 +6,6 @@ package fetch
 import (
 	"bufio"
 	"context"
-	"errors"
 	"net"
 	"os"
 	"strings"
@@ -208,40 +207,24 @@ func (r *Resolver) Lookup(ctx context.Context, host string) (string, error) {
 }
 
 func (r *Resolver) lookupUncached(ctx context.Context, host string) (string, error) {
-	// Look up A first: LookupIPAddr issues an A and an AAAA query in parallel,
-	// which means two sockets and two upstream queries per host. On a mass run
-	// that doubles both the DNS load and the ephemeral ports held (the range is
-	// only 64k). IPv4 covers the vast majority of hosts; IPv6 is a fallback.
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		ips, err := r.inner.LookupIP(lctx, "ip4", host)
-		cancel()
-		if err == nil && len(ips) > 0 {
-			return ips[0].String(), nil
-		}
-		if err != nil {
-			lastErr = err
-			var dnsErr *net.DNSError
-			if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-				return "", err // NXDOMAIN: no point retrying
-			}
-			continue // transient (timeout/SERVFAIL): retry once
-		}
-		break // resolved, but no A record
-	}
-
-	lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	// ONE A query, no retry: at 40M lookups a retry chain multiplies the load on
+	// the resolver for nothing. Measured on the VPS: ~10 DNS queries per host
+	// with the old (A, retry, AAAA, plus the dial fallback) shape, ~1 with this.
+	lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	ips, err := r.inner.LookupIP(lctx, "ip6", host)
+	ips, err := r.inner.LookupIP(lctx, "ip4", host)
 	if err == nil && len(ips) > 0 {
 		return ips[0].String(), nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if lastErr != nil {
-		return "", lastErr
+	// resolved but no A record: try AAAA once (IPv6-only hosts)
+	lctx6, cancel6 := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel6()
+	ips6, err6 := r.inner.LookupIP(lctx6, "ip6", host)
+	if err6 == nil && len(ips6) > 0 {
+		return ips6[0].String(), nil
 	}
 	return "", &net.DNSError{Err: "no address", Name: host}
 }

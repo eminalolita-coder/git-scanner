@@ -29,8 +29,26 @@ func TestAsyncWriterDeliversAll(t *testing.T) {
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if m.n == 0 {
-		t.Error("no findings delivered")
+	// must be ALL of them: the old Write dropped on channel overflow, which
+	// silently lost findings on a real run.
+	if m.n != 1000 {
+		t.Errorf("delivered %d findings, want 1000", m.n)
+	}
+}
+
+// TestAsyncWriterNoLoss measures the old lossy behaviour: with a tiny channel
+// and a slow inner writer every finding must still arrive.
+func TestAsyncWriterNoLoss(t *testing.T) {
+	m := &memWriter{}
+	a := NewAsync(m, 4)
+	for i := 0; i < 20000; i++ {
+		if err := a.Write(model.Finding{RuleID: "r"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = a.Close()
+	if m.n != 20000 {
+		t.Fatalf("delivered %d, want 20000", m.n)
 	}
 }
 

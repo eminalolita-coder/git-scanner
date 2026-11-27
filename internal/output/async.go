@@ -33,14 +33,23 @@ func NewAsync(w Writer, buf int) *AsyncWriter {
 	return a
 }
 
-// Write enqueues a finding without blocking (unless full).
+// Write enqueues a finding. It BLOCKS when the channel is full instead of
+// dropping: on a real run a burst of findings used to be silently lost, and
+// losing findings is worse than a little backpressure. drops stays as a
+// counter for observability.
 func (a *AsyncWriter) Write(f model.Finding) error {
 	select {
 	case a.ch <- f:
+		return nil
 	default:
-		a.dropped.Add(1)
 	}
-	return nil
+	// channel full: wait for the writer to catch up
+	select {
+	case a.ch <- f:
+		return nil
+	case <-a.done:
+		return nil
+	}
 }
 
 // Close flushes and closes the inner writer. Safe to call twice.
