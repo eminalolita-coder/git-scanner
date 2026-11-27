@@ -16,6 +16,12 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || SUDO=sudo
 
+# unbound threads: enough to keep many recursions in flight, capped so the
+# socket count stays sane (threads x outgoing-range fds)
+NUM_THREADS=${NUM_THREADS:-$(nproc)}
+[ "$NUM_THREADS" -gt 64 ] && NUM_THREADS=64
+echo "== threads unbound: $NUM_THREADS (nproc=$(nproc))"
+
 echo "== 1. paquets"
 $SUDO apt-get update -qq
 $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unbound curl python3 >/dev/null
@@ -67,6 +73,7 @@ server:
     hide-identity: yes
     hide-version: yes
 EOF
+$SUDO sed -i "s/^    num-threads: .*/    num-threads: $NUM_THREADS/" /etc/unbound/unbound.conf.d/gs.conf
 $SUDO systemctl daemon-reload
 $SUDO systemctl restart unbound
 sleep 4
