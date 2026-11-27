@@ -66,6 +66,11 @@ top200 = dedupe_by_base(scored, 200)
 open(OUT200, 'w').write('\n'.join(top200) + '\n')
 print('ecrit', OUT200, len(top200), 'chemins')
 
+OUT250 = 'paths/paths-top250.txt'
+top250 = dedupe_by_base(scored, 250)
+open(OUT250, 'w').write('\n'.join(top250) + '\n')
+print('ecrit', OUT250, len(top250), 'chemins')
+
 # 40 chemins: le noyau indispensable, choisi a la main dans la selection
 must = ['/.env', '/.env.local', '/.env.production', '/.git/HEAD', '/.git/config',
         '/config.php', '/wp-config.php', '/config.json', '/config.yml', '/config.js',
