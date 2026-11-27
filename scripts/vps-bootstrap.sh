@@ -14,7 +14,9 @@
 #   VPS=user@NEW_IP ./scripts/vps.sh deploy ~/domaines.txt
 set -eu
 
-[ "$(id -u)" -eq 0 ] || SUDO=sudo
+# always go through sudo: with an empty $SUDO, bash stops treating a following
+# VAR=value as an assignment prefix and tries to run it as a command
+SUDO=sudo
 
 # unbound threads: enough to keep many recursions in flight, capped so the
 # socket count stays sane (threads x outgoing-range fds)
