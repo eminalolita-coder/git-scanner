@@ -79,6 +79,8 @@ func newMassCmd(opts *Options) *cobra.Command {
 		rangeSizeKB     int
 		checkpoint      string
 		stallExit       int
+		rulesFlag       string
+		skipRulesFlag   string
 	)
 
 	cmd := &cobra.Command{
@@ -134,11 +136,28 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				cfg.Output.Format = format
 			}
 
+			// --rules/--skip-rules narrow the rule set: on a huge target the
+			// bulk rules (asset-js, generic-high-entropy, base64/hex blobs) are
+			// ~94% of the output and a large share of the CPU. Pairing does not
+			// depend on them (it re-reads the window text), so a narrow set
+			// keeps SES/mailjet/SMTP pairs intact.
+			base := patterns.Builtin()
+			keep, skip := splitCSV(rulesFlag), splitCSV(skipRulesFlag)
+			rules, unknown := patterns.Select(base, keep, skip)
+			if len(unknown) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "rules: unknown ID(s) ignored: %s\n", strings.Join(unknown, ", "))
+			}
+			if len(rules) == 0 {
+				return fmt.Errorf("no rule left after --rules/--skip-rules")
+			}
 			engine := patterns.NewEngine(maxPerPat)
-			if err := engine.AddAll(patterns.Builtin()); err != nil {
+			if err := engine.AddAll(rules); err != nil {
 				return err
 			}
 			engine.Freeze()
+			if len(keep) > 0 || len(skip) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "rules: %d/%d selected\n", engine.Count(), len(base))
+			}
 
 			res := fetch.NewResolver(splitCSV(resolvers), 15*time.Minute)
 			for _, e := range entries {
@@ -464,6 +483,8 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVar(&rangeSizeKB, "range-size", 256, "bytes (KB) to fetch for large files with --range")
 	f.StringVar(&checkpoint, "checkpoint", "", "append completed hosts to this file and resume from it")
 	f.IntVar(&stallExit, "stall-exit", 90, "exit for resume if no host completes for N seconds (0 = off)")
+	f.StringVar(&rulesFlag, "rules", "", "only run these rule IDs (comma-separated; see `rules` command)")
+	f.StringVar(&skipRulesFlag, "skip-rules", "", "skip these rule IDs (comma-separated)")
 	return cmd
 }
 

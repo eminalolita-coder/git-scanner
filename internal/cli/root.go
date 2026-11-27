@@ -75,6 +75,7 @@ listing one target per line.`,
 		newJSCmd(opts),
 		newConfigCmd(opts),
 		newVersionCmd(version),
+		newRulesCmd(opts),
 	)
 
 	return root
