@@ -136,6 +136,39 @@ for i in range(N):
         w(d, 'config.json', '{\n  "anthropic_key": "%s",\n  "debug": true\n}\n' % ak,
           [('anthropic-token-strict', ak)])
 
+    # ---- pièges de format (forme de valeur qui doit être gérée)
+    # 1. fins de ligne CRLF (fichiers édités sous Windows)
+    if random.random() < .15:
+        u, pw, _ = gen_ses()
+        with open(os.path.join(d, 'env.win'), 'wb') as fh:
+            fh.write(('SMTP_USERNAME=%s\r\nSMTP_PASSWORD=%s\r\n' % (u, pw)).encode())
+        for rule, sec in (('aws-ses-smtp-username', u), ('aws-ses-smtp-password', pw)):
+            manifest.append({'site': sid, 'file': 'env.win', 'rule_id': rule, 'secret': sec})
+    # 2. valeur encodée en base64 dans du JS (le scanner décode par défaut)
+    if random.random() < .15:
+        import base64 as b64
+        oa = gen_openai()
+        enc = b64.b64encode(oa.encode()).decode()
+        w(d, 'b64.js', 'const k="%s";\n' % enc, [('openai-token-strict', oa)])
+    # 3. guillemets échappés dans du JSON
+    if random.random() < .15:
+        sg = gen_sendgrid()
+        w(d, 'conf.js', '{"sendgrid":"%s","x":1}\n' % sg, [('sendgrid-token-strict', sg)])
+    # 4. même clé dans deux fichiers (dédup)
+    if random.random() < .15:
+        ak = gen_anthropic()
+        w(d, 'a.js', 'const A="%s";\n' % ak, [('anthropic-token-strict', ak)])
+        w(d, 'b.js', 'const B="%s";\n' % ak, [('anthropic-token-strict', ak)])
+    # 5. leurres : formes proches mais invalides -> aucune détection attendue
+    if random.random() < .25:
+        dec = []
+        dec.append('SG.' + rnd(21) + '.' + rnd(43))        # 21 au lieu de 22
+        dec.append('SG.' + rnd(22) + '.' + rnd(44))        # 44 au lieu de 43
+        dec.append('AKIA' + rnd(15, string.ascii_uppercase))  # 15 au lieu de 16
+        dec.append('MJ_APIKEY_PUBLIC=' + hexs(31))          # 31 hex
+        dec.append('NOT_A_KEY=' + rnd(30))                  # ni l'un ni l'autre
+        w(d, 'decoys.txt', '\n'.join(dec) + '\n')
+
 c = collections.Counter(m['rule_id'] for m in manifest)
 print('corpus:', N, 'sites ->', OUT)
 print('secrets plantes:', len(manifest))

@@ -42,41 +42,43 @@ type massEntry struct {
 
 func newMassCmd(opts *Options) *cobra.Command {
 	var (
-		concurrency   int
-		timeoutSec    int
-		pathsFlag     string
-		scheme        string
-		resolvers     string
-		outputDir     string
-		format        string
-		maxBodyKB     int
-		rate          int
-		verify        bool
-		resolveOnly   bool
-		maxPerPat     int
-		progressSec   int
-		profile       string
-		gogc          int
-		memLimitMB    int
-		method        string
-		keepAlive     bool
-		checkBuckets  bool
-		crawlJS       bool
-		jsMax         int
-		decode        bool
-		bucketObjects int
-		followGit     bool
-		followMax     int
-		gitDepth      int
-		gitToken      string
-		followForge   bool
-		forgeMax      int
-		followRobots  bool
-		robotsMax     int
-		rangeMode     bool
-		rangeSizeKB   int
-		checkpoint    string
-		stallExit     int
+		concurrency     int
+		timeoutSec      int
+		pathsFlag       string
+		pathsFile       string
+		maxPathsPerHost int
+		scheme          string
+		resolvers       string
+		outputDir       string
+		format          string
+		maxBodyKB       int
+		rate            int
+		verify          bool
+		resolveOnly     bool
+		maxPerPat       int
+		progressSec     int
+		profile         string
+		gogc            int
+		memLimitMB      int
+		method          string
+		keepAlive       bool
+		checkBuckets    bool
+		crawlJS         bool
+		jsMax           int
+		decode          bool
+		bucketObjects   int
+		followGit       bool
+		followMax       int
+		gitDepth        int
+		gitToken        string
+		followForge     bool
+		forgeMax        int
+		followRobots    bool
+		robotsMax       int
+		rangeMode       bool
+		rangeSizeKB     int
+		checkpoint      string
+		stallExit       int
 	)
 
 	cmd := &cobra.Command{
@@ -267,9 +269,12 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 				MaxConnsPerHost:   32,
 			})
 
-			paths := normalizePaths(splitCSV(pathsFlag))
+			paths := normalizePaths(append(splitCSV(pathsFlag), readLines(pathsFile)...))
 			if len(paths) == 0 {
 				paths = []string{"/"}
+			}
+			if len(paths) > maxPathsPerHost && maxPathsPerHost > 0 {
+				paths = paths[:maxPathsPerHost]
 			}
 			if scheme == "" {
 				scheme = "auto"
@@ -425,6 +430,8 @@ Input lines may be "domain" or "domain ip" (pre-resolved).`,
 	f.IntVarP(&concurrency, "concurrency", "C", 1000, "in-flight hosts")
 	f.IntVar(&timeoutSec, "timeout", 5, "per-request timeout (seconds)")
 	f.StringVar(&pathsFlag, "paths", "/", "comma-separated paths to fetch per host")
+	f.StringVar(&pathsFile, "paths-file", "", "file with one path per line, added to --paths")
+	f.IntVar(&maxPathsPerHost, "paths-max", 0, "cap the number of paths per host (0 = all)")
 	f.StringVar(&scheme, "scheme", "auto", "https|http|auto")
 	f.StringVar(&resolvers, "resolvers", "", "comma-separated DNS servers (default: system)")
 	f.StringVarP(&outputDir, "output", "o", "", "output directory")
@@ -1324,6 +1331,29 @@ func normalizePaths(in []string) []string {
 		}
 	}
 	return in
+}
+
+// readLines reads a one-path-per-line file, skipping blanks and #comments.
+func readLines(path string) []string {
+	if path == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var out []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		l := strings.TrimSpace(sc.Text())
+		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 func min(a, b int) int {
