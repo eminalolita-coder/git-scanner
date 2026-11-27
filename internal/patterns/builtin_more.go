@@ -88,21 +88,23 @@ func extractedRules() []Pattern {
 		},
 		{
 			// SES SMTP usernames are IAM access key ids and the passwords are
-			// 44 base64 chars. This pair form appears in .env and JSON configs.
-			// Tags deliberately omit "smtp": the generic SMTP checker matches on
-			// that tag and would treat these as user:pass@host credentials.
+			// 44 base64 chars. Detection is by FORMAT with a wide context
+			// window rather than by variable name: the two values are usually
+			// separated by a variable name on another line (MAIL_USERNAME=…
+			// blank line MAIL_PASSWORD=…), so anchoring on the prefix misses
+			// the common Laravel names.
 			ID: "aws-ses-smtp-credential", Description: "AWS SES SMTP credential (access key + password)",
-			Regex:       `(?:^|[^\w])((?:AKIA|ASIA)[A-Z0-9]{16}[\s"';:=,]{1,12}[A-Za-z0-9/+=]{44})(?:[^\w]|$)`,
+			Regex:       `(?:^|[^\w])((?:AKIA|ASIA)[A-Z0-9]{16}(?:[^\n]*\n){0,100}[^\n]*?[A-Za-z0-9/+=]{44})(?:[^\w]|$)`,
 			SecretGroup: 1, Keywords: []string{"akia", "asia"}, Tags: []string{"aws", "ses"},
 		},
 		{
 			ID: "aws-ses-smtp-username", Description: "AWS SES SMTP username",
-			Regex:       `(?i)(?:smtp|ses)[a-z_]{0,24}(?:user|username|userid|login)["'\s:=]{1,6}((?:AKIA|ASIA)[A-Z0-9]{16})`,
+			Regex:       `(?i)(?:smtp|ses|mail)[a-z_]{0,24}(?:user|username|userid|login)["'\s:=]{1,6}((?:AKIA|ASIA)[A-Z0-9]{16})`,
 			SecretGroup: 1, Keywords: []string{"smtp", "ses_"}, Tags: []string{"aws", "ses"},
 		},
 		{
 			ID: "aws-ses-smtp-password", Description: "AWS SES SMTP password (context)",
-			Regex:       `(?i)(?:smtp|ses)[a-z_]{0,24}(?:pass|password|secret)["'\s:=]{1,6}([A-Za-z0-9/+=]{44})`,
+			Regex:       `(?i)(?:smtp|ses|mail)[a-z_]{0,24}(?:pass|password|secret)["'\s:=]{1,6}([A-Za-z0-9/+=]{44})`,
 			SecretGroup: 1, Keywords: []string{"smtp", "ses_"}, Tags: []string{"aws", "ses"},
 		},
 		{
@@ -183,8 +185,10 @@ func extractedRules() []Pattern {
 		},
 		{
 			ID: "openai-token-strict", Description: "OpenAI key (strict)",
-			Regex:       `(?:^|[^\w])(sk-[A-Za-z0-9\-]{32,})(?:[^\w]|$)`,
+			Regex:       `(?:^|[^\w])(sk-[A-Za-z0-9_\-]{32,})(?:[^\w]|$)`,
 			SecretGroup: 1, Keywords: []string{"sk-"}, Tags: []string{"openai"},
+			// sk-ant-… is an Anthropic key and is checked elsewhere
+			Allowlist: []string{`^sk-ant-`},
 		},
 		{
 			ID: "anthropic-token-strict", Description: "Anthropic key (strict)",

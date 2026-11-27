@@ -60,9 +60,14 @@ func extraRules() []Pattern {
 			SecretGroup: 1, Keywords: []string{"xkeysib-"}, Tags: []string{"brevo"},
 		},
 		{
-			ID: "mailjet-key", Description: "Mailjet API key",
-			Regex:       `(?i)mailjet[^A-Za-z0-9]{0,20}([a-f0-9]{32})`,
-			SecretGroup: 1, Keywords: []string{"mailjet"}, Tags: []string{"mailjet"},
+			// Format + contexte : une cle Mailjet est un 32-hex. Le mot-cle
+			// (mailjet / mj_apikey) sert de filtre sur le fichier, puis TOUT
+			// 32-hex du fichier est retenu - c'est ce qui permet d'attraper
+			// la paire publique + privee (MJ_APIKEY_PUBLIC / _PRIVATE,
+			// MAILJET_SECRET_KEY), souvents sur des lignes separees.
+			ID: "mailjet-key", Description: "Mailjet API key (contexte)",
+			Regex:       `(?:^|[^\w])([a-f0-9]{32})(?:[^\w]|$)`,
+			SecretGroup: 1, Keywords: []string{"mailjet", "mj_apikey"}, Tags: []string{"mailjet"},
 		},
 		{
 			ID: "groq-key", Description: "Groq API key",

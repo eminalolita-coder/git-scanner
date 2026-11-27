@@ -291,6 +291,14 @@ func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte
 				}
 				f.Extra["json"] = string(content)
 			}
+			if m.Pattern.ID == "mailjet-key" {
+				if p := patterns.BestHex32(content, m.Secret); p != "" {
+					if f.Extra == nil {
+						f.Extra = map[string]string{}
+					}
+					f.Extra["partner"] = p
+				}
+			}
 			s.emit(f)
 		}
 	}

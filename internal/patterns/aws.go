@@ -6,6 +6,20 @@ import "regexp"
 // character class covers base64 as used by AWS secret access keys.
 var reSecretCandidate = regexp.MustCompile(`\b([A-Za-z0-9/+=]{40})\b`)
 
+// reHex32 matches a 32-character lowercase hex token (Mailjet key half).
+var reHex32 = regexp.MustCompile(`(?:^|[^0-9a-fA-F])([a-f0-9]{32})(?:[^0-9a-fA-F]|$)`)
+
+// BestHex32 returns the first 32-hex token in content other than exclude. It
+// pairs a Mailjet API_KEY with its SECRET_KEY, which sit on adjacent lines.
+func BestHex32(content []byte, exclude string) string {
+	for _, m := range reHex32.FindAllStringSubmatch(string(content), 40) {
+		if m[1] != exclude {
+			return m[1]
+		}
+	}
+	return ""
+}
+
 // reSESPassword matches a 44-character token that starts with an alphanumeric
 // and ends with base64 padding. Starting on an alphanumeric matters: in
 // "SMTP_PASSWORD=abc…=" the "=" of the assignment is itself a word boundary,

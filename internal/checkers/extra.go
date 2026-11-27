@@ -73,16 +73,6 @@ func init() {
 		return Result{Verified: ok(code), Identity: pick(out, "email")}
 	})
 
-	def("mailjet", []string{"mailjet-key"}, []string{"mailjet"}, func(ctx context.Context, secret string) Result {
-		code, _, err := getBody(ctx, "https://api.mailjet.com/v3/REST/user",
-			map[string]string{"Authorization": "Basic " + base64Encode(secret+":")})
-		if err != nil {
-			return Result{Err: err.Error()}
-		}
-		// 401 on key-only is expected; 200 or 401-with-valid-key both mean the key parsed
-		return Result{Verified: ok(code)}
-	})
-
 	def("mapbox", []string{"mapbox-token"}, []string{"mapbox"}, func(ctx context.Context, secret string) Result {
 		var out map[string]any
 		code, err := getJSON(ctx, "https://api.mapbox.com/tokens/v2?access_token="+secret, nil, &out)
