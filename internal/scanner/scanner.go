@@ -272,13 +272,18 @@ func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte
 			if loc.Line == 0 {
 				f.Location.Line = lineOf(content, m.Index)
 			}
+			// Paired values are searched in a window CENTRED on the match
+			// (100 lines either way), never in the whole file: a file with
+			// several credentials would otherwise let a key pair with a
+			// neighbour's secret.
+			win := lineWindow(content, m.Index, 100)
 			if isAWSKey(m.Pattern.ID) {
-				if sec := firstAWSSecret(blob, m.Secret); sec != "" {
+				if sec := firstAWSSecret(win, m.Secret); sec != "" {
 					f.Extra = map[string]string{"secret": sec}
 				}
 			}
 			if m.Pattern.ID == "aws-ses-smtp-username" {
-				if pass := patterns.BestSESPassword(blob, m.Secret, patterns.DefaultSecretEntropy); pass != "" {
+				if pass := patterns.BestSESPassword(win, m.Secret, patterns.DefaultSecretEntropy); pass != "" {
 					if f.Extra == nil {
 						f.Extra = map[string]string{}
 					}
@@ -292,11 +297,25 @@ func (s *Scanner) scanContent(t model.Target, loc model.Location, content []byte
 				f.Extra["json"] = string(content)
 			}
 			if m.Pattern.ID == "mailjet-key" {
-				if p := patterns.BestHex32(content, m.Secret); p != "" {
+				if p := patterns.BestHex32(win, m.Secret); p != "" {
 					if f.Extra == nil {
 						f.Extra = map[string]string{}
 					}
 					f.Extra["partner"] = p
+				}
+			}
+			if m.Pattern.ID == "smtp-credential" {
+				if f.Extra == nil {
+					f.Extra = map[string]string{}
+				}
+				if u := smtpUserOf(m.Match); u != "" {
+					f.Extra["smtp_user"] = u
+				}
+				if h, p := patterns.FirstSMTPHost(win); h != "" {
+					f.Extra["host"] = h
+					if p != "" {
+						f.Extra["port"] = p
+					}
 				}
 			}
 			s.emit(f)
@@ -356,6 +375,33 @@ func lineOf(content []byte, idx int) int {
 		idx = len(content)
 	}
 	return bytes.Count(content[:idx], []byte{'\n'}) + 1
+}
+
+// lineWindow returns content limited to n lines before and after offset. Used
+// to pair a value with its neighbour without letting a whole large file, or
+// another credential's entry, interfere.
+func lineWindow(content []byte, offset, n int) []byte {
+	if offset < 0 || offset > len(content) {
+		offset = 0
+	}
+	start := offset
+	for lines := 0; start > 0 && lines < n; {
+		start--
+		if content[start] == '\n' {
+			lines++
+		}
+	}
+	end := offset
+	for lines := 0; end < len(content) && lines < n; {
+		if content[end] == '\n' {
+			lines++
+		}
+		end++
+	}
+	if start > end {
+		start = end
+	}
+	return content[start:end]
 }
 
 func formatNotification(f model.Finding) string {
@@ -437,4 +483,15 @@ func isAWSKey(ruleID string) bool {
 // firstAWSSecret finds a plausible paired AWS secret key near the access key.
 func firstAWSSecret(blob []byte, accessKey string) string {
 	return patterns.BestSecretCandidate(blob, accessKey, patterns.DefaultSecretEntropy)
+}
+
+var reSMTPUser = regexp.MustCompile(`(?i)(?:user|username|login|userid)(?:name)?["'\s:=]{1,6}([A-Za-z0-9._%+@-]{2,64})`)
+
+// smtpUserOf re-extracts the user from a smtp-credential match, so the pair can
+// be completed with the host found in the same file.
+func smtpUserOf(match string) string {
+	if m := reSMTPUser.FindStringSubmatch(match); m != nil {
+		return m[1]
+	}
+	return ""
 }

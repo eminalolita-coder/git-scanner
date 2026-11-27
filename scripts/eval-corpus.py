@@ -12,7 +12,7 @@ import json, sys, os, collections
 corpus, findings_path = sys.argv[1], sys.argv[2]
 TARGETS = {'aws-ses-smtp-username', 'aws-ses-smtp-password', 'aws-ses-smtp-endpoint',
            'openai-token-strict', 'anthropic-token-strict', 'sendgrid-token-strict',
-           'mailjet-key'}
+           'mailjet-key', 'smtp-endpoint', 'smtp-credential'}
 
 man = collections.defaultdict(list)          # (rule) -> [(file, secret)]
 for l in open(os.path.join(corpus, 'MANIFEST.jsonl'), encoding='utf-8'):

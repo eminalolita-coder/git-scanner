@@ -136,6 +136,16 @@ for i in range(N):
         w(d, 'config.json', '{\n  "anthropic_key": "%s",\n  "debug": true\n}\n' % ak,
           [('anthropic-token-strict', ak)])
 
+    # ---- identifiants SMTP d'un fournisseur (comme le format host/port/user/password)
+    if random.random() < .25:
+        host = random.choice(['smtp.sendgrid.net', 'smtp-relay.brevo.com', 'smtp.mailgun.org',
+                              'in-v3.mailjet.com', 'smtp.elasticemail.com', 'smtp.postmarkapp.com',
+                              'smtp.socketlabs.com', 'pro.turbo-smtp.com'])
+        user = random.choice(['apikey', 'postmaster@mg.example.com', 'smtp-user'])
+        pw = rnd(24)
+        w(d, 'smtp.txt', 'host: %s\nport: 587\nuser: %s\npassword: %s\n' % (host, user, pw),
+          [('smtp-endpoint', host), ('smtp-credential', pw)])
+
     # ---- pièges de format (forme de valeur qui doit être gérée)
     # 1. fins de ligne CRLF (fichiers édités sous Windows)
     if random.random() < .15:

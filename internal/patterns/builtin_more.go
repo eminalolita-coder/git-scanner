@@ -82,6 +82,22 @@ func extractedRules() []Pattern {
 
 		// ---- AWS extras ----
 		{
+			// la liste d'hotes SMTP est un signal fort : elle donne le sens aux
+			// identifiants trouves dans le meme fichier, sans dependre d'un nom
+			// de variable (approche "grep + contexte").
+			ID: "smtp-endpoint", Description: "SMTP provider host (contexte)",
+			Regex:       `(?i)\b((?:smtp|smtp-relay|smtp25|mail|email|secure|pro|in-v3)[a-z0-9.-]*\.(?:sendgrid\.net|mailgun\.org|sendinblue\.com|brevo\.com|mailjet\.com|tipimail\.com|sparkpostmail\.com|deliverabilitymanager\.net|mailendo\.com|smtpeter\.com|smtp2go\.com|socketlabs\.com|emailsrvr\.com|infomaniak\.com|pepipost\.com|elasticemail\.com|turbo-smtp\.com|smtp-pulse\.com|mandrillapp\.com|postmarkapp\.com|mailchimp\.com|sendpulse\.com|moosend\.com|mailerlite\.com|zoho\.com|office365\.com|outlook\.com|gmail\.com|googlemail\.com),?)(?::(?:25|2525|465|587|443))?\b`,
+			SecretGroup: 1, Keywords: []string{"smtp", "mail."}, Tags: []string{"smtpendpoint"},
+		},
+		{
+			// paire utilisateur + mot de passe dans une fenetre, sans nom de
+			// variable impose : le fichier mentionne smtp/mail (pre-filtre) et
+			// les deux valeurs sont appariees, l'hote venant du contexte.
+			ID: "smtp-credential", Description: "SMTP credential (user + password, contexte)",
+			Regex:       `(?i)(?:^|[^\w])(?:user|username|login|userid)(?:name)?["'\s:=]{1,6}([A-Za-z0-9._%+@-]{2,64})[\s\S]{0,120}?(?:pass|password|passwd|pwd|secret)["'\s:=]{1,6}([A-Za-z0-9/+=._@!%#$^*&?-]{4,90})`,
+			SecretGroup: 2, Keywords: []string{"smtp", "mail"}, Tags: []string{"smtpcred"},
+		},
+		{
 			ID: "aws-access-key-boundary", Description: "AWS Access Key ID (strict)",
 			Regex:       `(?:^|[^\w])((?:AKIA|ASIA)[A-Z0-9]{16})(?:[^\w]|$)`,
 			SecretGroup: 1, Keywords: []string{"akia", "asia"}, Tags: []string{"aws"},
