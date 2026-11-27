@@ -36,6 +36,8 @@ STALL=${STALL:-90}
 MAX_RETRIES=${MAX_RETRIES:-50}
 BACKOFF=${BACKOFF:-30}
 MIN_CONC=${MIN_CONC:-250}
+START_CONC=$CONCURRENCY
+START_RATE=$RATE
 BIN=${BIN:-./git-scanner}
 SKIP_BUILD=${SKIP_BUILD:-0}
 EXTRA=${EXTRA:-}
@@ -89,9 +91,13 @@ while :; do
   echo "=== exit=$rc (likely a network cut) ==="
   if [ "$attempt" -ge "$MAX_RETRIES" ]; then echo "max retries reached"; break; fi
 
-  # the link is probably saturated: back off and slow down
+  # the link is probably saturated: back off and slow down.
+  # floor at MIN_CONC, but never above the value we started with: a small run
+  # (say concurrency 20) must not be RAISED to 250 after a stall.
   conc=$((conc / 2)); [ "$conc" -lt "$MIN_CONC" ] && conc=$MIN_CONC
+  [ "$conc" -gt "$START_CONC" ] && conc=$START_CONC
   rate=$((rate * 3 / 4)); [ "$rate" -lt 500 ] && rate=500
+  [ "$START_RATE" -gt 0 ] && [ "$rate" -gt "$START_RATE" ] && rate=$START_RATE
   echo "backing off ${BACKOFF}s, next attempt at concurrency=$conc rate=$rate"
   sleep "$BACKOFF"
 done
