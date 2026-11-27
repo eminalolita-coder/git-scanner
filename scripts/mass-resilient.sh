@@ -52,9 +52,22 @@ conc=$CONCURRENCY
 rate=$RATE
 attempt=0
 
+# Sorted copies are cached: re-sorting a 100M-line list on every supervisor
+# attempt costs minutes each time.
+SORTED_T="$CKPT.targets.sorted"
+SORTED_D="$CKPT.done.sorted"
+
+sorted_targets() {
+  if [ ! -f "$SORTED_T" ] || [ "$TARGETS" -nt "$SORTED_T" ]; then
+    LC_ALL=C tr -d '\r' < "$TARGETS" | LC_ALL=C sort -u > "$SORTED_T.tmp" && mv "$SORTED_T.tmp" "$SORTED_T"
+  fi
+}
+
 remaining() {
   if [ ! -f "$CKPT" ]; then wc -l < "$TARGETS"; return; fi
-  comm -23 <(sort -u "$TARGETS" | tr -d '\r') <(sort -u "$CKPT" | tr -d '\r') | wc -l
+  sorted_targets
+  LC_ALL=C tr -d '\r' < "$CKPT" | LC_ALL=C sort -u > "$SORTED_D.tmp" && mv "$SORTED_D.tmp" "$SORTED_D"
+  LC_ALL=C comm -23 "$SORTED_T" "$SORTED_D" | wc -l
 }
 
 while :; do
