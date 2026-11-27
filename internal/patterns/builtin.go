@@ -17,8 +17,8 @@ func humanRules() []Pattern {
 		},
 		{
 			ID: "gcp-api-key", Description: "Google API Key",
-			Regex:    `\b(AIza[0-9A-Za-z\-_]{35})\b`,
-			Keywords: []string{"aiza"}, Tags: []string{"gcp"},
+			Regex:    `\b(AIza[0-9A-Za-z\-_]{30,})\b`,
+			Keywords: []string{"aiza"}, Tags: []string{"gcp"}, Entropy: 3.5,
 		},
 		{
 			ID: "gcp-service-account", Description: "GCP Service Account JSON",

@@ -201,8 +201,9 @@ func extractedRules() []Pattern {
 		},
 		{
 			ID: "openai-token-strict", Description: "OpenAI key (strict)",
-			Regex:       `(?:^|[^\w])(sk-[A-Za-z0-9_\-]{32,})(?:[^\w]|$)`,
+			Regex:       `(?:^|[^\w])(sk-[A-Za-z0-9_\-]{20,})(?:[^\w]|$)`,
 			SecretGroup: 1, Keywords: []string{"sk-"}, Tags: []string{"openai"},
+			Entropy: 3.5,
 			// sk-ant-… is an Anthropic key and is checked elsewhere
 			Allowlist: []string{`^sk-ant-`},
 		},
