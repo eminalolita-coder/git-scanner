@@ -148,7 +148,7 @@ func newDiscoverCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				eng, err := buildEngine(cfg, "")
+				eng, err := buildEngine(cfg, "", "", "")
 				if err != nil {
 					return err
 				}
@@ -242,7 +242,7 @@ func newEnvCrackCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			engine, err := buildEngine(cfg, "")
+			engine, err := buildEngine(cfg, "", "", "")
 			if err != nil {
 				return err
 			}

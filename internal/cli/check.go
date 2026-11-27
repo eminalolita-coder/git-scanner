@@ -30,7 +30,7 @@ func newCheckCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			engine, err := buildEngine(cfg, "")
+			engine, err := buildEngine(cfg, "", "", "")
 			if err != nil {
 				return err
 			}

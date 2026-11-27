@@ -26,6 +26,8 @@ func newScanCmd(opts *Options) *cobra.Command {
 		patternsFile string
 		outputDir    string
 		format       string
+		rulesFlag    string
+		skipRules    string
 	)
 
 	cmd := &cobra.Command{
@@ -44,7 +46,7 @@ func newScanCmd(opts *Options) *cobra.Command {
 				cfg.Output.Format = format
 			}
 
-			engine, err := buildEngine(cfg, patternsFile)
+			engine, err := buildEngine(cfg, patternsFile, rulesFlag, skipRules)
 			if err != nil {
 				return err
 			}
@@ -88,6 +90,8 @@ func newScanCmd(opts *Options) *cobra.Command {
 	f.StringVar(&patternsFile, "patterns", "", "extra patterns JSON file")
 	f.StringVarP(&outputDir, "output", "o", "", "output directory (default from config)")
 	f.StringVar(&format, "format", "", "output format: jsonl|csv|txt")
+	f.StringVar(&rulesFlag, "rules", "", "only run these rule IDs (comma-separated; see `rules` command)")
+	f.StringVar(&skipRules, "skip-rules", "", "skip these rule IDs (comma-separated)")
 
 	return cmd
 }
@@ -130,9 +134,14 @@ func normalizeProxy(raw string) string {
 	return raw
 }
 
-func buildEngine(cfg *config.Config, extra string) (*patterns.Engine, error) {
+func buildEngine(cfg *config.Config, extra, keepCSV, skipCSV string) (*patterns.Engine, error) {
 	engine := patterns.NewEngine(cfg.ScanLimits.RegexMatchesPerPattern)
-	if err := engine.AddAll(patterns.Builtin()); err != nil {
+	base := patterns.Builtin()
+	rules, unknown := patterns.Select(base, splitCSV(keepCSV), splitCSV(skipCSV))
+	if len(unknown) > 0 {
+		fmt.Fprintf(os.Stdout, "rules: unknown ID(s) ignored: %s\n", strings.Join(unknown, ", "))
+	}
+	if err := engine.AddAll(rules); err != nil {
 		return nil, err
 	}
 	if extra != "" {

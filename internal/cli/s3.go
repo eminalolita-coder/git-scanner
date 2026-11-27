@@ -99,7 +99,7 @@ every bucket in an AWS account and triage them.`,
 				if format != "" {
 					cfg.Output.Format = format
 				}
-				engine, err := buildEngine(cfg, "")
+				engine, err := buildEngine(cfg, "", "", "")
 				if err != nil {
 					return err
 				}

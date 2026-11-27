@@ -89,7 +89,7 @@ clone and scan every discovered repository.`,
 				if format != "" {
 					cfg.Output.Format = format
 				}
-				engine, err := buildEngine(cfg, "")
+				engine, err := buildEngine(cfg, "", "", "")
 				if err != nil {
 					return err
 				}
